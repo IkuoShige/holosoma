@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV WORKSPACE_DIR=/workspace
 ENV CONDA_ROOT=/root/.holosoma_deps/miniconda3
 ENV PATH=$CONDA_ROOT/bin:$PATH
+ENV OMNI_KIT_ACCEPT_EULA=1
 
 RUN mkdir -p /var/lib/apt/lists/partial && \
     apt-get update && apt-get install -y --no-install-recommends \
