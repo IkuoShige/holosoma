@@ -6,7 +6,7 @@ Core training framework for humanoid robot reinforcement learning with support f
 |-------------|----------------------|
 | **Simulators** | IsaacGym, IsaacSim, MJWarp (training) \| Mujoco (evaluation) |
 | **Algorithms** | PPO, FastSAC |
-| **Robots** | Unitree G1, Booster T1 |
+| **Robots** | Unitree G1, Booster T1, Booster K1 |
 
 ## Training
 
@@ -32,6 +32,22 @@ source scripts/source_isaacsim_setup.sh
 python src/holosoma/holosoma/train_agent.py \
     exp:t1-29dof \
     simulator:isaacsim \
+    logger:wandb \
+    --training.seed 1
+
+# K1 with PPO on IsaacGym
+source scripts/source_isaacgym_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof \
+    simulator:isaacgym \
+    logger:wandb \
+    --training.seed 1
+
+# K1 with FastSAC on IsaacGym
+source scripts/source_isaacgym_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof-fast-sac \
+    simulator:isaacgym \
     logger:wandb \
     --training.seed 1
 ```
@@ -72,6 +88,19 @@ python src/holosoma/holosoma/train_agent.py \
     logger:wandb \
     --terrain.terrain-term.scale-factor=0.5  # required to avoid training instabilities
 
+# K1 with FastSAC
+source scripts/source_mujoco_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof-fast-sac \
+    simulator:mjwarp \
+    logger:wandb
+
+# K1 with PPO
+source scripts/source_mujoco_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof \
+    simulator:mjwarp \
+    logger:wandb
 ```
 
 > **Note:**
@@ -310,3 +339,120 @@ python src/holosoma/holosoma/train_agent.py \
     --randomization.setup-terms.randomize-base-com-startup.params.enabled=True \
     --randomization.setup-terms.mass-randomizer.params.added-mass-range=[-1.0,3.0]
 ```
+
+---
+
+## Common Training Options
+
+The following flags can be appended to any training command:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--training.num-envs` | `4096` | Number of parallel environments |
+| `--training.seed` | `42` | Random seed for reproducibility |
+| `--training.headless` | `True` | Run without rendering (set `False` to visualize) |
+| `--training.checkpoint` | `None` | Resume training from a checkpoint path |
+| `--training.export-onnx` | `True` | Export policy to ONNX alongside `.pt` checkpoints |
+| `--training.torch-deterministic` | `False` | Enable PyTorch deterministic mode |
+| `--training.multigpu` | `False` | Enable multi-GPU training (use with `torchrun`) |
+| `--training.max-eval-steps` | `None` | Maximum evaluation steps (`None` = unlimited) |
+| `logger:wandb` | — | Enable Weights & Biases logging |
+| `--logger.project` | — | W&B project name (overrides experiment default) |
+| `--logger.name` | — | W&B run name (overrides experiment default) |
+| `--logger.tags` | — | Tags for the W&B run |
+
+### Available Experiments
+
+| Experiment preset | Robot | Algorithm | DOFs |
+|-------------------|-------|-----------|------|
+| `exp:g1-29dof` | Unitree G1 | PPO | 29 |
+| `exp:g1-29dof-fast-sac` | Unitree G1 | FastSAC | 29 |
+| `exp:t1-29dof` | Booster T1 | PPO | 29 |
+| `exp:t1-29dof-fast-sac` | Booster T1 | FastSAC | 29 |
+| `exp:k1-22dof` | Booster K1 | PPO | 22 |
+| `exp:k1-22dof-fast-sac` | Booster K1 | FastSAC | 22 |
+| `exp:g1-29dof-wbt` | Unitree G1 | PPO (WBT) | 29 |
+| `exp:g1-29dof-wbt-fast-sac` | Unitree G1 | FastSAC (WBT) | 29 |
+
+### Available Simulators
+
+| Simulator preset | Engine | Notes |
+|-----------------|--------|-------|
+| `simulator:isaacgym` | IsaacGym | Primary training simulator |
+| `simulator:isaacsim` | IsaacSim | GPU physics, required for WBT |
+| `simulator:mjwarp` | MJWarp | GPU-accelerated MuJoCo (beta) |
+| `simulator:mujoco` | MuJoCo | CPU-only, single-env, use `mjpython` on macOS |
+
+---
+
+## Replaying Trained Policies in Simulator
+
+After training, you can replay (evaluate) a trained policy in the simulator to visualize the learned behavior.
+
+### In-Simulator Replay (Same Simulator)
+
+Loads the training configuration from the checkpoint and replays the policy with visualization:
+
+```bash
+# Replay from a W&B checkpoint (opens viewer)
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=wandb://<ENTITY>/<PROJECT>/<RUN_ID>/<CHECKPOINT_NAME> \
+    --training.headless=False
+
+# Replay from a local checkpoint
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=/path/to/model_0010000.pt \
+    --training.headless=False
+
+# Replay K1 policy (trained on IsaacGym)
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=/path/to/k1_checkpoint/model_0010000.pt \
+    --training.headless=False
+```
+
+### Cross-Simulator Replay (e.g. IsaacGym → MuJoCo)
+
+Override the simulator to replay a policy trained in one simulator using another:
+
+```bash
+# Replay an IsaacGym-trained policy in MuJoCo
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=/path/to/model_0010000.pt \
+    simulator:mujoco \
+    --randomization.ignore_unsupported=True \
+    --training.headless=False
+
+# macOS: use mjpython for interactive viewer
+mjpython src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=/path/to/model_0010000.pt \
+    simulator:mujoco \
+    --randomization.ignore_unsupported=True
+
+# Replay with multiple environments
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=/path/to/model_0010000.pt \
+    --training.num-envs=4
+```
+
+### ONNX Policy Export
+
+Export a trained checkpoint to ONNX format for inference or deployment:
+
+```bash
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint=/path/to/model_0010000.pt \
+    --training.export-onnx=True
+```
+
+The ONNX model is saved to `<checkpoint_dir>/exported/`. For deploying ONNX policies in MuJoCo or on real robots, see the [holosoma_inference documentation](../holosoma_inference/README.md).
+
+### Interactive Controls During Replay
+
+When the simulator viewer is active (locomotion evaluation):
+
+| Key | Action |
+|-----|--------|
+| `w` / `s` | Forward / backward velocity |
+| `a` / `d` | Left / right velocity |
+| `q` / `e` | Yaw left / right |
+| `z` | Zero all velocity commands |
