@@ -334,6 +334,130 @@ class FastSACAlgoConfig:
     """Algorithm-specific configuration."""
 
 
-AlgoInitConfig = Union[PPOConfig, FastSACConfig]
+@dataclass(frozen=True)
+class FPOModuleDictConfig:
+    """Configuration for FPO module dictionary."""
 
-AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig]
+    actor: ModuleConfig
+    """Actor module configuration (used for FlowPolicy velocity field network)."""
+
+    critic: ModuleConfig
+    """Critic module configuration (PPOCritic reuse)."""
+
+
+@dataclass(frozen=True)
+class FPOConfig:
+    """Configuration for FPO (Flow Policy Optimization) algorithm."""
+
+    module_dict: FPOModuleDictConfig
+    """FPO module configurations (actor, critic)."""
+
+    # PPO-shared parameters
+    num_learning_epochs: int = 8
+    """Number of learning epochs per update."""
+
+    num_mini_batches: int = 4
+    """Number of mini-batches per epoch."""
+
+    clip_param: float = 0.05
+    """PPO clipping parameter (FPO uses smaller clip than standard PPO)."""
+
+    gamma: float = 0.99
+    """Discount factor for future rewards."""
+
+    lam: float = 0.95
+    """GAE lambda parameter."""
+
+    value_loss_coef: float = 1.0
+    """Value loss coefficient."""
+
+    entropy_coef: float = 0.0
+    """Entropy coefficient (FPO does not use entropy regularization)."""
+
+    actor_learning_rate: float = 3e-4
+    """Learning rate for actor network."""
+
+    actor_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
+    """Actor optimizer configuration."""
+
+    critic_learning_rate: float = 3e-4
+    """Learning rate for critic network."""
+
+    critic_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
+    """Critic optimizer configuration."""
+
+    max_grad_norm: float = 1.0
+    """Maximum gradient norm for clipping."""
+
+    use_symmetry: bool = False
+    """Whether to use symmetry in training."""
+
+    symmetry_actor_coef: float = 0.0
+    """Symmetry coefficient for actor."""
+
+    symmetry_critic_coef: float = 0.0
+    """Symmetry coefficient for critic."""
+
+    num_steps_per_env: int = 24
+    """Number of steps per environment."""
+
+    save_interval: int = 100
+    """Interval for saving model checkpoints."""
+
+    load_optimizer: bool = True
+    """Whether to load optimizer state."""
+
+    num_learning_iterations: int = 1000000
+    """Total number of learning iterations."""
+
+    init_at_random_ep_len: bool = True
+    """Whether to initialize at random episode length."""
+
+    eval_callbacks: Any = None
+    """Evaluation callbacks configuration."""
+
+    max_actor_learning_rate: float | None = None
+    min_actor_learning_rate: float | None = None
+    max_critic_learning_rate: float | None = None
+    min_critic_learning_rate: float | None = None
+
+    # FPO-specific parameters
+    time_embed_dim: int = 64
+    """Dimension of sinusoidal timestep embedding."""
+
+    use_ada_ln: bool = True
+    """Whether to use adaptive layer normalization (adaLN) for time conditioning."""
+
+    num_flow_steps: int = 10
+    """Number of ODE Euler integration steps K for action generation."""
+
+    num_mc_samples: int = 4
+    """Number of Monte Carlo samples for CFM loss estimation."""
+
+    ratio_mode: str = "per_sample"
+    """FPO ratio computation mode: 'per_sample' (FPO++) or 'legacy_avg'."""
+
+    ratio_log_clip: float = 3.0
+    """Clipping range for log ratio: clamp(log_r, -clip, clip)."""
+
+    onnx_export_num_flow_steps: int | None = None
+    """Number of flow steps for ONNX export. None means use num_flow_steps."""
+
+
+@dataclass(frozen=True)
+class FPOAlgoConfig:
+    """Configuration for FPO algorithm wrapper."""
+
+    _target_: str
+    """Target algorithm class."""
+
+    _recursive_: bool
+    """Whether to recursively instantiate."""
+
+    config: FPOConfig
+    """Algorithm-specific configuration."""
+
+
+AlgoInitConfig = Union[PPOConfig, FastSACConfig, FPOConfig]
+
+AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig, FPOAlgoConfig]

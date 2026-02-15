@@ -1,0 +1,401 @@
+from __future__ import annotations
+
+from typing import Callable
+
+import torch
+from holosoma.agents.modules.augmentation_utils import SymmetryUtils
+from holosoma.agents.modules.module_utils import (
+    setup_flow_policy_module,
+    setup_ppo_critic_module,
+)
+from holosoma.agents.ppo.ppo import PPO
+from holosoma.config_types.algo import FPOConfig
+from holosoma.envs.base_task.base_task import BaseTask
+from holosoma.utils.helpers import instantiate
+from holosoma.utils.inference_helpers import (
+    attach_onnx_metadata,
+    export_policy_as_onnx,
+    get_command_ranges_from_env,
+    get_control_gains_from_config,
+    get_urdf_text_from_robot_config,
+)
+from loguru import logger
+from torch import nn
+
+
+class FPOAgent(PPO):
+    """Flow Policy Optimization (FPO) agent.
+
+    FPO is an on-policy RL algorithm that uses conditional flow matching (CFM)
+    to learn a flow-based policy capable of expressing multimodal action distributions.
+    It reuses the PPO framework for critic, GAE, and rollout logic, but replaces the
+    Gaussian actor with a FlowPolicy and the probability-ratio surrogate with a
+    CFM-loss-based ratio.
+    """
+
+    config: FPOConfig
+
+    def __init__(self, env: BaseTask, config: FPOConfig, log_dir, device="cpu", multi_gpu_cfg: dict | None = None):
+        # PPO.__init__ calls _init_config, sets up logging, etc.
+        super().__init__(env, config, log_dir, device, multi_gpu_cfg)
+
+    def _init_obs_keys(self):
+        self.actor_obs_keys = self.config.module_dict.actor.input_dim
+        self.critic_obs_keys = self.config.module_dict.critic.input_dim
+
+    def _setup_models_and_optimizer(self):
+        logger.info("Setting up FPO models")
+        self.actor = setup_flow_policy_module(
+            obs_dim_dict=self.algo_obs_dim_dict,
+            module_config=self.config.module_dict.actor,
+            num_actions=self.num_act,
+            device=self.device,
+            history_length=self.algo_history_length_dict,
+            time_embed_dim=self.config.time_embed_dim,
+            use_ada_ln=self.config.use_ada_ln,
+            num_flow_steps=self.config.num_flow_steps,
+        )
+        self.critic = setup_ppo_critic_module(
+            obs_dim_dict=self.algo_obs_dim_dict,
+            module_config=self.config.module_dict.critic,
+            device=self.device,
+            history_length=self.algo_history_length_dict,
+        )
+
+        if self.use_symmetry:
+            self.symmetry_utils = SymmetryUtils(self.env)
+
+        # Synchronize model weights across GPUs after initialization
+        if self.is_multi_gpu:
+            self._synchronize_model_weights()
+
+        self.actor_optimizer = instantiate(
+            self.config.actor_optimizer, params=self.actor.parameters(), lr=self.actor_learning_rate
+        )
+        self.critic_optimizer = instantiate(
+            self.config.critic_optimizer, params=self.critic.parameters(), lr=self.critic_learning_rate
+        )
+
+    def _setup_storage(self):
+        super()._setup_storage()
+        # Register FPO-specific MC sample buffers
+        k = self.config.num_mc_samples
+        self.storage.register("flow_eps", shape=(k, self.num_act), dtype=torch.float)
+        self.storage.register("flow_t", shape=(k, 1), dtype=torch.float)
+        self.storage.register("flow_old_loss", shape=(k, 1), dtype=torch.float)
+
+    def _rollout_step(self, obs_dict):
+        with torch.inference_mode():
+            for _ in range(self.config.num_steps_per_env):
+                # Environment step
+                actor_obs = torch.cat([obs_dict[k] for k in self.actor_obs_keys], dim=1)
+                critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
+
+                # Generate actions via ODE integration
+                actions = self.actor.act({"actor_obs": actor_obs})
+                values = self.critic.evaluate({"critic_obs": critic_obs}).detach()
+
+                # Sample MC noise and time for old-policy loss
+                batch_size = actor_obs.shape[0]
+                eps, t = self.actor.sample_mc_noise_and_time(batch_size, self.config.num_mc_samples, actor_obs.device)
+                # Compute old-policy CFM loss: [B, K, 1]
+                old_loss = self.actor.compute_flow_loss(actor_obs, actions, eps, t)
+
+                obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
+
+                for obs_key in obs_dict:
+                    obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
+                rewards, dones = rewards.to(self.device), dones.to(self.device)
+
+                # Compute bootstrap value for timeouts
+                final_rewards = torch.zeros_like(rewards)
+                if infos["time_outs"].any():
+                    final_critic_obs = torch.cat([infos["final_observations"][k] for k in self.critic_obs_keys], dim=1)
+                    final_values = self.critic.evaluate({"critic_obs": final_critic_obs}).detach()
+                    final_rewards += self.config.gamma * torch.squeeze(
+                        final_values * infos["time_outs"].unsqueeze(1).to(self.device), 1
+                    )
+
+                # Add transition to storage
+                # For FPO, we store dummy values for PPO-specific fields
+                self.storage.add(
+                    actor_obs=actor_obs,
+                    critic_obs=critic_obs,
+                    actions=actions,
+                    values=values,
+                    actions_log_prob=torch.zeros(batch_size, 1, device=self.device),  # unused in FPO
+                    action_mean=torch.zeros(batch_size, self.num_act, device=self.device),  # unused in FPO
+                    action_sigma=torch.zeros(batch_size, self.num_act, device=self.device),  # unused in FPO
+                    rewards=(rewards + final_rewards).view(-1, 1),
+                    dones=dones.view(-1, 1),
+                    flow_eps=eps.detach(),
+                    flow_t=t.detach(),
+                    flow_old_loss=old_loss.detach(),
+                )
+
+                # Reset actor and critic for completed envs
+                self.actor.reset(dones)
+                self.critic.reset(dones)
+
+                if self.log_dir is not None:
+                    self.logging_helper.update_episode_stats(rewards, dones, infos)
+
+            # Return / Advantage computation
+            last_critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
+            last_values = self.critic.evaluate({"critic_obs": last_critic_obs}).detach().to(self.device)
+            returns, advantages = self._compute_returns_and_advantages(
+                last_values,
+                self.storage["values"].to(self.device),
+                self.storage["dones"].to(self.device),
+                self.storage["rewards"].to(self.device),
+            )
+
+            self.storage["returns"] = returns
+            self.storage["advantages"] = advantages
+
+        return obs_dict
+
+    def _compute_fpo_ratio(self, old_loss: torch.Tensor, new_loss: torch.Tensor) -> torch.Tensor:
+        """Compute FPO surrogate ratio from CFM losses.
+
+        Parameters
+        ----------
+        old_loss : Tensor
+            Old-policy CFM loss, shape [B, K, 1]
+        new_loss : Tensor
+            New-policy CFM loss, shape [B, K, 1]
+
+        Returns
+        -------
+        Tensor
+            FPO ratio, shape [B]
+        """
+        clip_val = self.config.ratio_log_clip
+
+        if self.config.ratio_mode == "per_sample":
+            # Per-sample ratio (FPO++): compute ratio per MC sample, then average
+            log_r = torch.clamp(old_loss - new_loss, -clip_val, clip_val)  # [B, K, 1]
+            ratio_per_sample = torch.exp(log_r)  # [B, K, 1]
+            ratio = ratio_per_sample.mean(dim=1).squeeze(-1)  # [B]
+        else:
+            # Legacy avg: average losses first, then compute single ratio
+            old_loss_avg = old_loss.mean(dim=1)  # [B, 1]
+            new_loss_avg = new_loss.mean(dim=1)  # [B, 1]
+            log_r = torch.clamp(old_loss_avg - new_loss_avg, -clip_val, clip_val)  # [B, 1]
+            ratio = torch.exp(log_r).squeeze(-1)  # [B]
+
+        return ratio
+
+    def _compute_ppo_loss(self, minibatch):
+        actions_batch = minibatch["actions"]
+        target_values_batch = minibatch["values"]
+        advantages_batch = minibatch["advantages"]
+        returns_batch = minibatch["returns"]
+
+        # FPO-specific: retrieve stored MC samples
+        flow_eps = minibatch["flow_eps"]  # [B, K, A]
+        flow_t = minibatch["flow_t"]  # [B, K, 1]
+        flow_old_loss = minibatch["flow_old_loss"]  # [B, K, 1]
+
+        # Symmetry augmentation
+        original_batch_size = actions_batch.shape[0]
+        if self.use_symmetry:
+            actor_obs = self.symmetry_utils.augment_observations(
+                obs=minibatch["actor_obs"],
+                env=self.env,
+                obs_list=self.actor_obs_keys,
+            )
+            critic_obs = self.symmetry_utils.augment_observations(
+                obs=minibatch["critic_obs"],
+                env=self.env,
+                obs_list=self.critic_obs_keys,
+            )
+            actions_batch = self.symmetry_utils.augment_actions(actions=actions_batch)
+            num_aug = int(actor_obs.shape[0] / original_batch_size)
+            target_values_batch = target_values_batch.repeat(num_aug, 1)
+            advantages_batch = advantages_batch.repeat(num_aug, 1)
+            returns_batch = returns_batch.repeat(num_aug, 1)
+            # Repeat MC samples for symmetry-augmented batch
+            flow_eps = flow_eps.repeat(num_aug, 1, 1)
+            flow_t = flow_t.repeat(num_aug, 1, 1)
+            flow_old_loss = flow_old_loss.repeat(num_aug, 1, 1)
+        else:
+            actor_obs = minibatch["actor_obs"]
+            critic_obs = minibatch["critic_obs"]
+
+        # Compute new-policy CFM loss with gradients
+        new_loss = self.actor.compute_flow_loss(actor_obs, actions_batch, flow_eps, flow_t)  # [B, K, 1]
+
+        # Compute critic values
+        value_batch = self.critic.evaluate({"critic_obs": critic_obs})
+
+        # Compute FPO ratio
+        ratio = self._compute_fpo_ratio(flow_old_loss, new_loss)  # [B]
+
+        # Surrogate loss (PPO-style clipping with FPO ratio)
+        surrogate = -torch.squeeze(advantages_batch) * ratio
+        surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
+            ratio, 1.0 - self.config.clip_param, 1.0 + self.config.clip_param
+        )
+        surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+
+        # Value function loss (same as PPO)
+        value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
+            -self.config.clip_param, self.config.clip_param
+        )
+        value_losses = (value_batch - returns_batch).pow(2)
+        value_losses_clipped = (value_clipped - returns_batch).pow(2)
+        value_loss = torch.max(value_losses, value_losses_clipped).mean()
+
+        # Symmetry losses
+        if self.use_symmetry and (self.config.symmetry_actor_coef > 0.0 or self.config.symmetry_critic_coef > 0.0):
+            with torch.no_grad():
+                mean_actions_batch = self.actor.act_inference({"actor_obs": actor_obs.detach().clone()})
+            mean_actions_for_original_batch, mean_actions_for_symmetry_batch = (
+                mean_actions_batch[:original_batch_size],
+                mean_actions_batch[original_batch_size:],
+            )
+            mean_symmetry_actions_batch = self.symmetry_utils.augment_actions(
+                actions=mean_actions_for_original_batch,
+            )[original_batch_size:]
+            symmetry_actor_loss = torch.nn.functional.mse_loss(
+                mean_actions_for_symmetry_batch,
+                mean_symmetry_actions_batch,
+            )
+            symmetry_critic_loss = torch.nn.functional.mse_loss(
+                value_batch[:original_batch_size],
+                value_batch[original_batch_size:],
+            )
+        else:
+            symmetry_actor_loss = torch.tensor(0.0, device=self.device)
+            symmetry_critic_loss = torch.tensor(0.0, device=self.device)
+
+        # FPO does not use entropy regularization; compute mean CFM loss for logging
+        cfm_loss_mean = new_loss.mean()
+
+        actor_loss = surrogate_loss + self.config.symmetry_actor_coef * symmetry_actor_loss
+        critic_loss = self.config.value_loss_coef * value_loss + self.config.symmetry_critic_coef * symmetry_critic_loss
+
+        # Return a dict compatible with PPO's _update_algo_step expectations
+        # kl_mean is required by the parent; we return 0 since FPO doesn't use KL-based LR scheduling
+        return {
+            "actor_loss": actor_loss,
+            "critic_loss": critic_loss,
+            "symmetry_actor_loss": symmetry_actor_loss,
+            "symmetry_critic_loss": symmetry_critic_loss,
+            "value_loss": value_loss,
+            "surrogate_loss": surrogate_loss,
+            "entropy_loss": torch.tensor(0.0, device=self.device),
+            "kl_mean": torch.tensor(0.0, device=self.device),
+            "cfm_loss": cfm_loss_mean,
+            "fpo_ratio_mean": ratio.mean(),
+        }
+
+    def _post_epoch_logging(self, it, loss_dict):
+        extra_log_dicts = {
+            "Policy": {
+                "cfm_loss": loss_dict.get("cfm_loss", 0.0),
+                "fpo_ratio_mean": loss_dict.get("fpo_ratio_mean", 0.0),
+            },
+        }
+        loss_dict["actor_learning_rate"] = self.actor_learning_rate
+        loss_dict["critic_learning_rate"] = self.critic_learning_rate
+        self.logging_helper.post_epoch_logging(it=it, loss_dict=loss_dict, extra_log_dicts=extra_log_dicts)
+
+    # ===== ONNX / Inference =====
+
+    @property
+    def actor_onnx_wrapper(self):
+        """Return an ONNX-exportable wrapper with fixed K steps unrolled.
+
+        Uses zeros as the initial state instead of torch.randn to ensure
+        deterministic ONNX export (avoids device mismatch during constant folding).
+        At inference time on a real robot, the ONNX model produces a deterministic
+        policy (the ODE-integrated "mean" from the zero-noise starting point).
+        """
+        num_steps = self.config.onnx_export_num_flow_steps or self.config.num_flow_steps
+        actor = self.actor
+
+        class FlowPolicyONNXWrapper(nn.Module):
+            def __init__(self, flow_actor, export_num_flow_steps):
+                super().__init__()
+                self.velocity_field = flow_actor.velocity_field
+                self.num_actions = flow_actor.num_actions
+                self.export_num_flow_steps = export_num_flow_steps
+                self._obs_dim = flow_actor.obs_dim
+
+            def forward(self, actor_obs: torch.Tensor) -> torch.Tensor:
+                k = self.export_num_flow_steps
+                dt = 1.0 / k
+                # Start from zeros (deterministic) instead of randn.
+                # Use new_zeros to inherit device/dtype from input tensor.
+                x = actor_obs.new_zeros(actor_obs.shape[0], self.num_actions)
+                t_val = 1.0
+                for _ in range(k):
+                    t_tensor = actor_obs.new_full((actor_obs.shape[0], 1), t_val)
+                    velocity = self.velocity_field(actor_obs, x, t_tensor)
+                    x = x + dt * velocity
+                    t_val -= dt
+                return x
+
+        return FlowPolicyONNXWrapper(actor, num_steps)
+
+    def export(self, onnx_file_path: str):
+        """Export FPO policy as ONNX.
+
+        Overrides PPO.export to bypass _OnnxMotionPolicyExporter which cannot
+        decompose the FlowPolicy ODE-loop wrapper. Always uses the simple
+        export_policy_as_onnx path directly.
+        """
+        was_training = self.actor.training
+        self._eval_mode()
+
+        wrapper = self.actor_onnx_wrapper
+        # Move wrapper to CPU for ONNX export (all tensors on same device)
+        wrapper = wrapper.cpu()
+        example_obs = torch.zeros(1, wrapper._obs_dim)
+
+        export_policy_as_onnx(
+            wrapper=wrapper,
+            onnx_file_path=onnx_file_path,
+            example_obs_dict={"actor_obs": example_obs},
+        )
+
+        # Move wrapper back (it shares velocity_field with self.actor)
+        wrapper.to(self.device)
+
+        # Attach metadata
+        kp_list, kd_list = get_control_gains_from_config(self.env.robot_config)
+        cmd_ranges = get_command_ranges_from_env(self.env)
+        urdf_file_path, urdf_str = get_urdf_text_from_robot_config(self.env.robot_config)
+
+        metadata = {
+            "dof_names": self.env.robot_config.dof_names,
+            "kp": kp_list,
+            "kd": kd_list,
+            "command_ranges": cmd_ranges,
+            "robot_urdf": urdf_str,
+            "robot_urdf_path": urdf_file_path,
+        }
+        metadata.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
+
+        attach_onnx_metadata(onnx_path=onnx_file_path, metadata=metadata)
+
+        self.logging_helper.save_to_wandb(onnx_file_path)
+
+        if was_training:
+            self._train_mode()
+
+    def get_inference_policy(
+        self, device: str | None = None, num_flow_steps: int | None = None
+    ) -> Callable[[dict[str, torch.Tensor]], torch.Tensor]:
+        self.actor.eval()
+        if device is not None:
+            self.actor.to(device)
+
+        flow_steps = num_flow_steps or self.config.num_flow_steps
+
+        def policy_fn(obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
+            return self.actor.act_inference(obs_dict, num_flow_steps=flow_steps)
+
+        return policy_fn

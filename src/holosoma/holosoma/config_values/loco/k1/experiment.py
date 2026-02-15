@@ -57,4 +57,20 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
-__all__ = ["k1_22dof", "k1_22dof_fast_sac"]
+k1_22dof_fpo = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_fpo_manager"),
+    algo=replace(algo.fpo, config=replace(algo.fpo.config, num_learning_iterations=25000, use_symmetry=True)),
+    simulator=simulator.isaacgym,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum,
+    reward=reward.k1_22dof_loco,
+)
+
+__all__ = ["k1_22dof", "k1_22dof_fast_sac", "k1_22dof_fpo"]

@@ -57,4 +57,20 @@ t1_29dof_fast_sac = ExperimentConfig(
     ),
 )
 
-__all__ = ["t1_29dof", "t1_29dof_fast_sac"]
+t1_29dof_fpo = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-t1-manager", name="t1_29dof_fpo_manager"),
+    algo=replace(algo.fpo, config=replace(algo.fpo.config, num_learning_iterations=25000, use_symmetry=True)),
+    simulator=simulator.isaacgym,
+    robot=robot.t1_29dof_waist_wrist,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.t1_29dof_loco_single_wolinvel,
+    action=action.t1_29dof_joint_pos,
+    termination=termination.t1_29dof_termination,
+    randomization=randomization.t1_29dof_randomization,
+    command=command.t1_29dof_command,
+    curriculum=curriculum.t1_29dof_curriculum,
+    reward=reward.t1_29dof_loco,
+)
+
+__all__ = ["t1_29dof", "t1_29dof_fast_sac", "t1_29dof_fpo"]

@@ -1,6 +1,9 @@
 from holosoma.config_types.algo import (
     FastSACAlgoConfig,
     FastSACConfig,
+    FPOAlgoConfig,
+    FPOConfig,
+    FPOModuleDictConfig,
     LayerConfig,
     ModuleConfig,
     OptimizerConfig,
@@ -100,7 +103,57 @@ fast_sac = FastSACAlgoConfig(
     ),
 )
 
+fpo = FPOAlgoConfig(
+    _target_="holosoma.agents.fpo.fpo_agent.FPOAgent",
+    _recursive_=False,
+    config=FPOConfig(
+        num_learning_epochs=8,
+        num_mini_batches=4,
+        clip_param=0.05,
+        gamma=0.99,
+        lam=0.95,
+        value_loss_coef=1.0,
+        entropy_coef=0.0,
+        actor_learning_rate=3e-4,
+        actor_optimizer=OptimizerConfig(_target_="torch.optim.AdamW", weight_decay=0.001),
+        critic_learning_rate=3e-4,
+        critic_optimizer=OptimizerConfig(_target_="torch.optim.AdamW", weight_decay=0.001),
+        max_grad_norm=1.0,
+        use_symmetry=True,
+        symmetry_actor_coef=0.0,
+        symmetry_critic_coef=0.0,
+        num_steps_per_env=24,
+        save_interval=100,
+        load_optimizer=True,
+        num_learning_iterations=1000000,
+        init_at_random_ep_len=True,
+        eval_callbacks=None,
+        time_embed_dim=64,
+        use_ada_ln=True,
+        num_flow_steps=10,
+        num_mc_samples=4,
+        ratio_mode="per_sample",
+        ratio_log_clip=3.0,
+        onnx_export_num_flow_steps=None,
+        module_dict=FPOModuleDictConfig(
+            actor=ModuleConfig(
+                type="MLP",
+                input_dim=["actor_obs"],
+                output_dim=["robot_action_dim"],
+                layer_config=LayerConfig(hidden_dims=[512, 256, 128], activation="ELU"),
+            ),
+            critic=ModuleConfig(
+                type="MLP",
+                input_dim=["critic_obs"],
+                output_dim=[1],
+                layer_config=LayerConfig(hidden_dims=[512, 256, 128], activation="ELU"),
+            ),
+        ),
+    ),
+)
+
 DEFAULTS = {
     "ppo": ppo,
     "fast_sac": fast_sac,
+    "fpo": fpo,
 }
