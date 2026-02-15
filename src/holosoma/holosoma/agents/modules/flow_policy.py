@@ -109,6 +109,10 @@ class VelocityFieldMLP(nn.Module):
 
         # Output layer: predicts velocity (same dim as action)
         self.output_layer = nn.Linear(hidden_dims[-1] if hidden_dims else input_dim, action_dim)
+        # Zero-initialize so untrained velocity field produces ~0, keeping
+        # initial ODE output close to the starting noise (small after tanh).
+        nn.init.normal_(self.output_layer.weight, std=1e-3)
+        nn.init.zeros_(self.output_layer.bias)
 
     def forward(self, obs: Tensor, x_t: Tensor, t: Tensor) -> Tensor:
         """Predict velocity field.
@@ -160,10 +164,12 @@ class FlowPolicy(nn.Module):
         time_embed_dim: int = 64,
         use_ada_ln: bool = True,
         num_flow_steps: int = 10,
+        action_bound: float = 3.0,
     ):
         super().__init__()
         self.num_actions = num_actions
         self.num_flow_steps = num_flow_steps
+        self.action_bound = action_bound
 
         # Process module config to resolve action dim
         module_config = self._process_module_config(module_config, num_actions)
@@ -304,7 +310,8 @@ class FlowPolicy(nn.Module):
             x = x + dt * velocity
             t_val -= dt
 
-        return x
+        # Bound output via tanh to prevent unbounded actions
+        return self.action_bound * torch.tanh(x)
 
     def act_inference(self, obs_dict: dict[str, Tensor], num_flow_steps: int | None = None) -> Tensor:
         """Generate actions via ODE Euler integration (inference mode, no grad).

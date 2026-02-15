@@ -353,7 +353,7 @@ class FPOConfig:
     """FPO module configurations (actor, critic)."""
 
     # PPO-shared parameters
-    num_learning_epochs: int = 8
+    num_learning_epochs: int = 3
     """Number of learning epochs per update."""
 
     num_mini_batches: int = 4
@@ -374,19 +374,19 @@ class FPOConfig:
     entropy_coef: float = 0.0
     """Entropy coefficient (FPO does not use entropy regularization)."""
 
-    actor_learning_rate: float = 3e-4
+    actor_learning_rate: float = 1e-4
     """Learning rate for actor network."""
 
     actor_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
     """Actor optimizer configuration."""
 
-    critic_learning_rate: float = 3e-4
+    critic_learning_rate: float = 1e-4
     """Learning rate for critic network."""
 
     critic_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
     """Critic optimizer configuration."""
 
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 0.5
     """Maximum gradient norm for clipping."""
 
     use_symmetry: bool = False
@@ -439,6 +439,15 @@ class FPOConfig:
 
     ratio_log_clip: float = 3.0
     """Clipping range for log ratio: clamp(log_r, -clip, clip)."""
+
+    action_bound: float = 3.0
+    """Scale factor for tanh bounding of ODE output: output = action_bound * tanh(raw)."""
+
+    cfm_reg_coef: float = 0.05
+    """Coefficient for direct CFM loss regularization on actor loss."""
+
+    cfm_reg_ema_beta: float = 0.99
+    """EMA decay for CFM loss normalization."""
 
     onnx_export_num_flow_steps: int | None = None
     """Number of flow steps for ONNX export. None means use num_flow_steps."""

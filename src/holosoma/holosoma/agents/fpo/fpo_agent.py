@@ -38,6 +38,7 @@ class FPOAgent(PPO):
     def __init__(self, env: BaseTask, config: FPOConfig, log_dir, device="cpu", multi_gpu_cfg: dict | None = None):
         # PPO.__init__ calls _init_config, sets up logging, etc.
         super().__init__(env, config, log_dir, device, multi_gpu_cfg)
+        self._ema_cfm_loss: float | None = None
 
     def _init_obs_keys(self):
         self.actor_obs_keys = self.config.module_dict.actor.input_dim
@@ -54,6 +55,7 @@ class FPOAgent(PPO):
             time_embed_dim=self.config.time_embed_dim,
             use_ada_ln=self.config.use_ada_ln,
             num_flow_steps=self.config.num_flow_steps,
+            action_bound=self.config.action_bound,
         )
         self.critic = setup_ppo_critic_module(
             obs_dim_dict=self.algo_obs_dim_dict,
@@ -270,10 +272,19 @@ class FPOAgent(PPO):
             symmetry_actor_loss = torch.tensor(0.0, device=self.device)
             symmetry_critic_loss = torch.tensor(0.0, device=self.device)
 
-        # FPO does not use entropy regularization; compute mean CFM loss for logging
+        # CFM loss regularization: prevents velocity field divergence
         cfm_loss_mean = new_loss.mean()
+        cfm_loss_val = cfm_loss_mean.item()
+        if self._ema_cfm_loss is None:
+            self._ema_cfm_loss = cfm_loss_val
+        else:
+            self._ema_cfm_loss = (
+                self.config.cfm_reg_ema_beta * self._ema_cfm_loss + (1.0 - self.config.cfm_reg_ema_beta) * cfm_loss_val
+            )
+        normalized_cfm_loss = cfm_loss_mean / max(self._ema_cfm_loss, 1.0)
+        cfm_reg_loss = self.config.cfm_reg_coef * normalized_cfm_loss
 
-        actor_loss = surrogate_loss + self.config.symmetry_actor_coef * symmetry_actor_loss
+        actor_loss = surrogate_loss + cfm_reg_loss + self.config.symmetry_actor_coef * symmetry_actor_loss
         critic_loss = self.config.value_loss_coef * value_loss + self.config.symmetry_critic_coef * symmetry_critic_loss
 
         # Return a dict compatible with PPO's _update_algo_step expectations
@@ -288,6 +299,7 @@ class FPOAgent(PPO):
             "entropy_loss": torch.tensor(0.0, device=self.device),
             "kl_mean": torch.tensor(0.0, device=self.device),
             "cfm_loss": cfm_loss_mean,
+            "cfm_reg_loss": cfm_reg_loss,
             "fpo_ratio_mean": ratio.mean(),
         }
 
@@ -295,6 +307,7 @@ class FPOAgent(PPO):
         extra_log_dicts = {
             "Policy": {
                 "cfm_loss": loss_dict.get("cfm_loss", 0.0),
+                "cfm_reg_loss": loss_dict.get("cfm_reg_loss", 0.0),
                 "fpo_ratio_mean": loss_dict.get("fpo_ratio_mean", 0.0),
             },
         }
@@ -323,6 +336,7 @@ class FPOAgent(PPO):
                 self.num_actions = flow_actor.num_actions
                 self.export_num_flow_steps = export_num_flow_steps
                 self._obs_dim = flow_actor.obs_dim
+                self._action_bound = flow_actor.action_bound
 
             def forward(self, actor_obs: torch.Tensor) -> torch.Tensor:
                 k = self.export_num_flow_steps
@@ -336,7 +350,7 @@ class FPOAgent(PPO):
                     velocity = self.velocity_field(actor_obs, x, t_tensor)
                     x = x + dt * velocity
                     t_val -= dt
-                return x
+                return self._action_bound * torch.tanh(x)
 
         return FlowPolicyONNXWrapper(actor, num_steps)
 

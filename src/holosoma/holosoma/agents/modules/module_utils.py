@@ -62,6 +62,7 @@ def setup_flow_policy_module(
     time_embed_dim: int = 64,
     use_ada_ln: bool = True,
     num_flow_steps: int = 10,
+    action_bound: float = 3.0,
 ):
     return FlowPolicy(
         obs_dim_dict=obs_dim_dict,
@@ -71,4 +72,5 @@ def setup_flow_policy_module(
         time_embed_dim=time_embed_dim,
         use_ada_ln=use_ada_ln,
         num_flow_steps=num_flow_steps,
+        action_bound=action_bound,
     ).to(device)
