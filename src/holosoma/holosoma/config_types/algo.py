@@ -428,29 +428,38 @@ class FPOConfig:
     use_ada_ln: bool = True
     """Whether to use adaptive layer normalization (adaLN) for time conditioning."""
 
-    num_flow_steps: int = 10
-    """Number of ODE Euler integration steps K for action generation."""
+    num_flow_steps: int = 64
+    """Number of ODE Euler integration steps for action generation (paper: 64 for locomotion)."""
 
-    num_mc_samples: int = 4
-    """Number of Monte Carlo samples for CFM loss estimation."""
+    num_mc_samples: int = 16
+    """Number of Monte Carlo samples for CFM loss estimation (paper: 8-64, locomotion default 16)."""
 
     ratio_mode: str = "per_sample"
     """FPO ratio computation mode: 'per_sample' (FPO++) or 'legacy_avg'."""
 
-    ratio_log_clip: float = 3.0
+    ratio_log_clip: float = 0.5
     """Clipping range for log ratio: clamp(log_r, -clip, clip)."""
 
     action_bound: float = 3.0
     """Scale factor for tanh bounding of ODE output: output = action_bound * tanh(raw)."""
 
-    cfm_reg_coef: float = 0.05
-    """Coefficient for direct CFM loss regularization on actor loss."""
+    cfm_reg_coef: float = 0.0
+    """Coefficient for direct CFM loss regularization on actor loss (paper: 0, not used)."""
 
     cfm_reg_ema_beta: float = 0.99
     """EMA decay for CFM loss normalization."""
 
     onnx_export_num_flow_steps: int | None = None
     """Number of flow steps for ONNX export. None means use num_flow_steps."""
+
+    trust_region_mode: str = "aspo"
+    """Trust region mode: 'aspo' (Asymmetric SPO, paper default) or 'ppo_clip' (standard PPO clipping)."""
+
+    cfm_loss_clip: float | None = None
+    """Per-sample CFM loss clamp upper bound (two-stage clamp stage 1). None disables."""
+
+    mc_chunk_size: int | None = 16
+    """Chunk size along K (MC sample) dimension for compute_flow_loss. None disables chunking."""
 
 
 @dataclass(frozen=True)

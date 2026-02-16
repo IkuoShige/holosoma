@@ -86,6 +86,21 @@ class FPOAgent(PPO):
         self.storage.register("flow_t", shape=(k, 1), dtype=torch.float)
         self.storage.register("flow_old_loss", shape=(k, 1), dtype=torch.float)
 
+    def _compute_flow_loss_chunked(self, obs, action, eps, t):
+        """Compute CFM loss with optional chunking along the K (MC sample) dimension.
+
+        This avoids CUDA OOM when K is large by processing chunks sequentially.
+        """
+        chunk_size = self.config.mc_chunk_size
+        k = eps.shape[1]
+        if chunk_size is None or k <= chunk_size:
+            return self.actor.compute_flow_loss(obs, action, eps, t)
+        chunks = []
+        for start in range(0, k, chunk_size):
+            end = min(start + chunk_size, k)
+            chunks.append(self.actor.compute_flow_loss(obs, action, eps[:, start:end], t[:, start:end]))
+        return torch.cat(chunks, dim=1)
+
     def _rollout_step(self, obs_dict):
         with torch.inference_mode():
             for _ in range(self.config.num_steps_per_env):
@@ -101,7 +116,7 @@ class FPOAgent(PPO):
                 batch_size = actor_obs.shape[0]
                 eps, t = self.actor.sample_mc_noise_and_time(batch_size, self.config.num_mc_samples, actor_obs.device)
                 # Compute old-policy CFM loss: [B, K, 1]
-                old_loss = self.actor.compute_flow_loss(actor_obs, actions, eps, t)
+                old_loss = self._compute_flow_loss_chunked(actor_obs, actions, eps, t)
 
                 obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
 
@@ -170,15 +185,15 @@ class FPOAgent(PPO):
         Returns
         -------
         Tensor
-            FPO ratio, shape [B]
+            If ratio_mode == "per_sample": [B, K] per-sample ratios (NOT averaged).
+            Otherwise: [B] averaged ratio.
         """
         clip_val = self.config.ratio_log_clip
 
         if self.config.ratio_mode == "per_sample":
-            # Per-sample ratio (FPO++): compute ratio per MC sample, then average
+            # Two-stage clamp (stage 2): clamp the difference
             log_r = torch.clamp(old_loss - new_loss, -clip_val, clip_val)  # [B, K, 1]
-            ratio_per_sample = torch.exp(log_r)  # [B, K, 1]
-            ratio = ratio_per_sample.mean(dim=1).squeeze(-1)  # [B]
+            ratio = torch.exp(log_r).squeeze(-1)  # [B, K]
         else:
             # Legacy avg: average losses first, then compute single ratio
             old_loss_avg = old_loss.mean(dim=1)  # [B, 1]
@@ -226,20 +241,44 @@ class FPOAgent(PPO):
             critic_obs = minibatch["critic_obs"]
 
         # Compute new-policy CFM loss with gradients
-        new_loss = self.actor.compute_flow_loss(actor_obs, actions_batch, flow_eps, flow_t)  # [B, K, 1]
+        new_loss = self._compute_flow_loss_chunked(actor_obs, actions_batch, flow_eps, flow_t)  # [B, K, 1]
 
         # Compute critic values
         value_batch = self.critic.evaluate({"critic_obs": critic_obs})
 
         # Compute FPO ratio
-        ratio = self._compute_fpo_ratio(flow_old_loss, new_loss)  # [B]
+        ratio = self._compute_fpo_ratio(flow_old_loss, new_loss)
+        if not torch.isfinite(ratio).all():
+            logger.warning("Non-finite ratio detected, replacing with 1.0")
+            ratio = torch.where(torch.isfinite(ratio), ratio, torch.ones_like(ratio))
+        eps = self.config.clip_param
 
-        # Surrogate loss (PPO-style clipping with FPO ratio)
-        surrogate = -torch.squeeze(advantages_batch) * ratio
-        surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
-            ratio, 1.0 - self.config.clip_param, 1.0 + self.config.clip_param
-        )
-        surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+        if self.config.ratio_mode == "per_sample":
+            # ratio: [B, K], advantages: [B, 1] -> expand to [B, K]
+            adv = torch.squeeze(advantages_batch)  # [B]
+            adv_k = adv.unsqueeze(1).expand_as(ratio)  # [B, K]
+
+            if self.config.trust_region_mode == "aspo":
+                # ASPO: A>=0 uses PPO clip, A<0 uses SPO quadratic penalty
+                pos_mask = adv_k >= 0  # [B, K]
+                ppo_obj = torch.min(adv_k * ratio, adv_k * ratio.clamp(1 - eps, 1 + eps))
+                spo_obj = adv_k * ratio - (adv_k.abs() / (2 * eps)) * (ratio - 1).pow(2)
+                objective = torch.where(pos_mask, ppo_obj, spo_obj)  # [B, K]
+            else:
+                # ppo_clip fallback
+                objective = torch.min(adv_k * ratio, adv_k * ratio.clamp(1 - eps, 1 + eps))
+
+            # Mean over both K (MC samples) and batch dimensions
+            if not torch.isfinite(objective).all():
+                logger.warning("Non-finite objective detected, replacing with 0.0")
+                objective = torch.where(torch.isfinite(objective), objective, torch.zeros_like(objective))
+            surrogate_loss = -objective.mean()
+        else:
+            # legacy_avg: ratio is [B], standard PPO clip
+            adv = torch.squeeze(advantages_batch)
+            surrogate = -adv * ratio
+            surrogate_clipped = -adv * ratio.clamp(1 - eps, 1 + eps)
+            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
         # Value function loss (same as PPO)
         value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
@@ -285,7 +324,42 @@ class FPOAgent(PPO):
         cfm_reg_loss = self.config.cfm_reg_coef * normalized_cfm_loss
 
         actor_loss = surrogate_loss + cfm_reg_loss + self.config.symmetry_actor_coef * symmetry_actor_loss
+        if not torch.isfinite(actor_loss):
+            logger.warning("Non-finite actor_loss detected, replacing with zero")
+            actor_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
         critic_loss = self.config.value_loss_coef * value_loss + self.config.symmetry_critic_coef * symmetry_critic_loss
+
+        # Diagnostic metrics for 2x2 ablation (no grad impact)
+        with torch.no_grad():
+            ratio_flat = ratio.detach().flatten()
+            ratio_p10 = torch.quantile(ratio_flat, 0.1)
+            ratio_p50 = torch.quantile(ratio_flat, 0.5)
+            ratio_p90 = torch.quantile(ratio_flat, 0.9)
+
+            # Clamp firing rates
+            old_l = flow_old_loss.detach()
+            new_l = new_loss.detach()
+            if self.config.cfm_loss_clip is not None:
+                stage1_rate = (
+                    ((old_l >= self.config.cfm_loss_clip) | (new_l >= self.config.cfm_loss_clip)).float().mean()
+                )
+                old_l = old_l.clamp(max=self.config.cfm_loss_clip)
+                new_l = new_l.clamp(max=self.config.cfm_loss_clip)
+            else:
+                stage1_rate = torch.tensor(0.0, device=self.device)
+            diff = old_l - new_l
+            clip_val = self.config.ratio_log_clip
+            stage2_rate = (diff.abs() >= clip_val).float().mean()
+
+            # Cov(A, log_ratio) and sign agreement
+            log_r_per = torch.log(ratio.detach().clamp(min=1e-8))  # [B,K] or [B]
+            if log_r_per.dim() == 2:
+                log_r_avg = log_r_per.mean(dim=1)  # [B]
+            else:
+                log_r_avg = log_r_per  # [B]
+            adv_d = adv.detach()
+            cov_a_logr = ((adv_d - adv_d.mean()) * (log_r_avg - log_r_avg.mean())).mean()
+            sign_agree = ((adv_d > 0) == (log_r_avg > 0)).float().mean()
 
         # Return a dict compatible with PPO's _update_algo_step expectations
         # kl_mean is required by the parent; we return 0 since FPO doesn't use KL-based LR scheduling
@@ -301,6 +375,13 @@ class FPOAgent(PPO):
             "cfm_loss": cfm_loss_mean,
             "cfm_reg_loss": cfm_reg_loss,
             "fpo_ratio_mean": ratio.mean(),
+            "fpo_ratio_p10": ratio_p10,
+            "fpo_ratio_p50": ratio_p50,
+            "fpo_ratio_p90": ratio_p90,
+            "fpo_cov_adv_logr": cov_a_logr,
+            "fpo_sign_agree": sign_agree,
+            "fpo_clamp_stage1_rate": stage1_rate,
+            "fpo_clamp_stage2_rate": stage2_rate,
         }
 
     def _post_epoch_logging(self, it, loss_dict):
@@ -309,6 +390,13 @@ class FPOAgent(PPO):
                 "cfm_loss": loss_dict.get("cfm_loss", 0.0),
                 "cfm_reg_loss": loss_dict.get("cfm_reg_loss", 0.0),
                 "fpo_ratio_mean": loss_dict.get("fpo_ratio_mean", 0.0),
+                "fpo_ratio_p10": loss_dict.get("fpo_ratio_p10", 0.0),
+                "fpo_ratio_p50": loss_dict.get("fpo_ratio_p50", 0.0),
+                "fpo_ratio_p90": loss_dict.get("fpo_ratio_p90", 0.0),
+                "fpo_cov_adv_logr": loss_dict.get("fpo_cov_adv_logr", 0.0),
+                "fpo_sign_agree": loss_dict.get("fpo_sign_agree", 0.0),
+                "fpo_clamp_stage1_rate": loss_dict.get("fpo_clamp_stage1_rate", 0.0),
+                "fpo_clamp_stage2_rate": loss_dict.get("fpo_clamp_stage2_rate", 0.0),
             },
         }
         loss_dict["actor_learning_rate"] = self.actor_learning_rate
