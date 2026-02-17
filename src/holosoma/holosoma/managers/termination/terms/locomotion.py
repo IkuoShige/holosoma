@@ -29,9 +29,9 @@ def contact_forces_exceeded(
     return torch.any(torch.norm(contact_forces, dim=-1) > force_threshold, dim=1)
 
 
-def gravity_tilt_exceeded(env, threshold_x: float, threshold_y: float) -> torch.Tensor:
+def gravity_tilt_exceeded(env, threshold_x: float, threshold_y: float, enabled: bool = True) -> torch.Tensor:
     """Terminate if projected gravity exceeds roll/pitch thresholds."""
-    if not getattr(env.config.termination, "terminate_by_gravity", False):
+    if not enabled:
         return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     grav = get_projected_gravity(env)
     tilt_x = torch.abs(grav[:, 0]) > threshold_x
@@ -39,9 +39,9 @@ def gravity_tilt_exceeded(env, threshold_x: float, threshold_y: float) -> torch.
     return tilt_x | tilt_y
 
 
-def base_height_below_threshold(env, min_height: float) -> torch.Tensor:
+def base_height_below_threshold(env, min_height: float, enabled: bool = True) -> torch.Tensor:
     """Terminate if base height drops below threshold."""
-    if not getattr(env.config.termination, "terminate_by_low_height", False):
+    if not enabled:
         return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     base_height = env.simulator.robot_root_states[:, 2]
     return base_height < min_height

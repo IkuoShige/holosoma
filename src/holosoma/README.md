@@ -50,6 +50,22 @@ python src/holosoma/holosoma/train_agent.py \
     simulator:isaacgym \
     logger:wandb \
     --training.seed 1
+
+# K1 Agile (high-speed + robust) with PPO on IsaacGym
+source scripts/source_isaacgym_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof-agile \
+    simulator:isaacgym \
+    logger:wandb \
+    --training.seed 1
+
+# K1 Agile with FastSAC on IsaacGym
+source scripts/source_isaacgym_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof-agile-fast-sac \
+    simulator:isaacgym \
+    logger:wandb \
+    --training.seed 1
 ```
 
 Once checkpoints are saved, you can evaluate policies using [In-Training Evaluation](#in-training-evaluation) (same simulator as training) or cross-simulator evaluation in MuJoCo (see [holosoma_inference](../holosoma_inference/README.md)).
@@ -371,6 +387,8 @@ The following flags can be appended to any training command:
 | `exp:t1-29dof-fast-sac` | Booster T1 | FastSAC | 29 |
 | `exp:k1-22dof` | Booster K1 | PPO | 22 |
 | `exp:k1-22dof-fast-sac` | Booster K1 | FastSAC | 22 |
+| `exp:k1-22dof-agile` | Booster K1 | PPO (Agile) | 22 |
+| `exp:k1-22dof-agile-fast-sac` | Booster K1 | FastSAC (Agile) | 22 |
 | `exp:g1-29dof-wbt` | Unitree G1 | PPO (WBT) | 29 |
 | `exp:g1-29dof-wbt-fast-sac` | Unitree G1 | FastSAC (WBT) | 29 |
 
