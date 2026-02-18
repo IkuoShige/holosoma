@@ -215,8 +215,13 @@ class FPOAgent(PPO):
         """
         clip_val = self.config.ratio_log_clip
 
+        # Stage 1: clamp individual CFM losses before taking differences
+        if self.config.cfm_loss_clip is not None:
+            old_loss = old_loss.clamp(max=self.config.cfm_loss_clip)
+            new_loss = new_loss.clamp(max=self.config.cfm_loss_clip)
+
         if self.config.ratio_mode == "per_sample":
-            # Two-stage clamp (stage 2): clamp the difference
+            # Stage 2: clamp the difference before exponentiation
             log_r = torch.clamp(old_loss - new_loss, -clip_val, clip_val)  # [B, K, 1]
             ratio = torch.exp(log_r).squeeze(-1)  # [B, K]
         else:
