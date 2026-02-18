@@ -452,6 +452,22 @@ class FPOConfig:
     action_bound_warmup_init_factor: float = 1.0 / 6.0
     """Initial action_bound = action_bound * this factor (default: 0.5 when action_bound=3.0)."""
 
+    # Warm-start parameters
+    warm_start_mode: str = "none"
+    """Warm-start mode: 'none' (default), 'bc_teacher' (BC from PPO checkpoint)."""
+
+    warm_start_checkpoint: str | None = None
+    """Path to PPO checkpoint for warm-start. Required if warm_start_mode != 'none'."""
+
+    warm_start_bc_steps: int = 200
+    """Number of BC gradient steps during warm-start phase."""
+
+    warm_start_load_critic: bool = False
+    """Whether to load critic weights from PPO checkpoint (requires matching architecture)."""
+
+    warm_start_teacher_module: ModuleConfig | None = None
+    """PPO teacher actor module config. Required for 'bc_teacher' mode to reconstruct PPOActor."""
+
     flow_param_mode: str = "velocity"
     """Flow parameterization: 'velocity' (target=action-eps) or 'data' (target=action)."""
 

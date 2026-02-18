@@ -6,6 +6,7 @@ from holosoma.config_values.loco.g1.experiment import (
     g1_29dof_fpo,
     g1_29dof_fpo_data,
     g1_29dof_fpo_pp_repro,
+    g1_29dof_fpo_pp_warmstart_probe,
     g1_29dof_fpo_refdiag,
 )
 from holosoma.config_values.loco.k1.experiment import k1_22dof, k1_22dof_fast_sac, k1_22dof_fpo
@@ -24,6 +25,7 @@ DEFAULTS = {
     "g1_29dof_fpo": g1_29dof_fpo,
     "g1_29dof_fpo_data": g1_29dof_fpo_data,
     "g1_29dof_fpo_pp_repro": g1_29dof_fpo_pp_repro,
+    "g1_29dof_fpo_pp_warmstart_probe": g1_29dof_fpo_pp_warmstart_probe,
     "g1_29dof_fpo_refdiag": g1_29dof_fpo_refdiag,
     "t1_29dof": t1_29dof,
     "t1_29dof_fast_sac": t1_29dof_fast_sac,

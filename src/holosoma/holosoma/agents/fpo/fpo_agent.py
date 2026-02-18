@@ -8,6 +8,7 @@ from holosoma.agents.fast_sac.fast_sac_utils import EmpiricalNormalization
 from holosoma.agents.modules.augmentation_utils import SymmetryUtils
 from holosoma.agents.modules.module_utils import (
     setup_flow_policy_module,
+    setup_ppo_actor_module,
     setup_ppo_critic_module,
 )
 from holosoma.agents.ppo.ppo import PPO
@@ -127,6 +128,98 @@ class FPOAgent(PPO):
         b_init = b_full * self.config.action_bound_warmup_init_factor
         progress = min(self.current_learning_iteration / warmup_iters, 1.0)
         self.actor.action_bound = b_init + progress * (b_full - b_init)
+
+    # ===== BC Warm-Start =====
+
+    def _build_teacher_from_ppo_checkpoint(self):
+        """Build PPO teacher actor from checkpoint for BC warm-start."""
+        ckpt_path = self.config.warm_start_checkpoint
+        if ckpt_path is None:
+            raise ValueError("warm_start_checkpoint is required for bc_teacher mode")
+        teacher_module = self.config.warm_start_teacher_module
+        if teacher_module is None:
+            raise ValueError("warm_start_teacher_module is required for bc_teacher mode")
+
+        loaded = torch.load(ckpt_path, map_location=self.device)
+
+        teacher = setup_ppo_actor_module(
+            obs_dim_dict=self.algo_obs_dim_dict,
+            module_config=copy.deepcopy(teacher_module),
+            num_actions=self.num_act,
+            init_noise_std=0.8,
+            device=self.device,
+            history_length=self.algo_history_length_dict,
+        )
+        teacher.load_state_dict(loaded["actor_model_state_dict"])
+        teacher.eval()
+        for p in teacher.parameters():
+            p.requires_grad_(False)
+
+        if self.config.warm_start_load_critic:
+            try:
+                self.critic.load_state_dict(loaded["critic_model_state_dict"])
+                logger.info("Loaded critic from PPO checkpoint")
+            except RuntimeError as e:
+                logger.warning(f"Could not load critic from PPO (architecture mismatch): {e}")
+
+        logger.info(f"Built PPO teacher from {ckpt_path} (iter={loaded.get('iter', '?')})")
+        return teacher
+
+    def _run_bc_warmstart(self, teacher):
+        """Run behavior cloning warm-start: train FPO flow to match PPO teacher actions."""
+        bc_steps = self.config.warm_start_bc_steps
+        logger.info(f"Starting BC warm-start: {bc_steps} steps")
+        self._train_mode()
+
+        obs_dict = self.env.reset_all()
+        for k in obs_dict:
+            obs_dict[k] = obs_dict[k].to(self.device)
+
+        for step in range(bc_steps):
+            actor_obs_raw = torch.cat([obs_dict[k] for k in self.actor_obs_keys], dim=1)
+
+            # Teacher uses raw obs (PPO was trained without obs normalization)
+            with torch.no_grad():
+                teacher_actions = teacher.act_inference({"actor_obs": actor_obs_raw})
+
+            # FPO flow uses normalized obs (also updates normalizer running stats)
+            if self.config.obs_normalization:
+                actor_obs = self.obs_normalizer(actor_obs_raw)
+            else:
+                actor_obs = actor_obs_raw
+
+            # Compute CFM loss: train flow to produce teacher_actions given normalized obs
+            batch_size = actor_obs.shape[0]
+            eps, t = self.actor.sample_mc_noise_and_time(batch_size, self.config.num_mc_samples, actor_obs.device)
+            cfm_loss = self._compute_flow_loss_chunked(actor_obs, teacher_actions, eps, t)
+            bc_loss = cfm_loss.mean()
+
+            self.actor_optimizer.zero_grad()
+            bc_loss.backward()
+            nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.max_grad_norm)
+            self.actor_optimizer.step()
+
+            if step % 50 == 0 or step == bc_steps - 1:
+                logger.info(f"BC warm-start step {step}/{bc_steps}: cfm_loss={bc_loss.item():.4f}")
+
+            # Step environment to get diverse observations
+            with torch.no_grad():
+                actions = self.actor.act({"actor_obs": actor_obs})
+            obs_dict, _, dones, _ = self.env.step({"actions": actions})
+            for k in obs_dict:
+                obs_dict[k] = obs_dict[k].to(self.device)
+            self.actor.reset(dones)
+
+        logger.info("BC warm-start complete")
+
+    def learn(self):
+        # Run BC warm-start before normal training (only at iteration 0)
+        if self.config.warm_start_mode == "bc_teacher" and self.current_learning_iteration == 0:
+            teacher = self._build_teacher_from_ppo_checkpoint()
+            self._run_bc_warmstart(teacher)
+            del teacher
+            torch.cuda.empty_cache()
+        super().learn()
 
     def _rollout_step(self, obs_dict):
         self._update_action_bound()
