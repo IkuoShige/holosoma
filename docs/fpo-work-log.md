@@ -155,6 +155,34 @@ python src/holosoma/holosoma/eval_agent.py \
 
 ---
 
+## FPO++ 再現実装の発散修正 (2026-02-18, feat/fpo)
+
+### 問題
+
+`g1_29dof_fpo_pp_repro` (FPO++, arxiv:2602.02481) の学習で cfm_loss が ~700K に発散。ロボットの動き自体は改善傾向にあるが、velocity field が不安定で学習が収束しない。
+
+### 根本原因
+
+1. **num_steps_per_env=96, num_mini_batches=16** — 論文は 24, 4。1イテレーションあたり 512 回の gradient update（論文は128回）で old_loss が陳腐化
+2. **Stage 1 CFM loss clamping が ratio 計算に未適用** — `cfm_loss_clip` のクランプが診断メトリクス計算（no_grad ブロック内）にしか存在せず、実際の `_compute_fpo_ratio` には反映されていなかった。論文は「(i) clamping CFM losses before taking differences and (ii) then clamping the difference before exponentiation」と明記
+
+### 修正内容
+
+| ファイル | 変更 |
+|---------|------|
+| `config_values/loco/g1/experiment.py` | `num_steps_per_env`: 96→24, `num_mini_batches`: 16→4, `cfm_loss_clip=5000.0` 追加 |
+| `agents/fpo/fpo_agent.py` | `_compute_fpo_ratio` に stage 1 clamping 追加（old_loss/new_loss を cfm_loss_clip でクランプしてから diff 計算） |
+
+### 検証メトリクス
+
+- `cfm_loss`: 発散しないか（初期 ~300-500 が安定推移すること）
+- `fpo_clamp_stage1_rate`: stage 1 clamping 発火率
+- `fpo_clamp_stage2_rate`: 0.5 以下に低下するか
+- `fpo_sign_agree`: 0.5 より上昇するか
+- `fpo_actor_grad_norm`: max_grad_norm (0.5) から徐々に下がるか
+
+---
+
 ## 主要な設計判断
 
 | 項目 | 決定 | 理由 |
@@ -168,3 +196,120 @@ python src/holosoma/holosoma/eval_agent.py \
 | ONNX export | `FPOAgent.export()`オーバーライド | PPOの`_OnnxMotionPolicyExporter`がODE loopを分解してしまうため回避 |
 | ONNX初期ノイズ | zeros（決定論的） | ONNX exportとデプロイ時の再現性のため |
 | テンソル生成 | `new_zeros`/`new_full`/`register_buffer` | ONNX constant folding時のデバイス不整合防止 |
+
+---
+
+## FPO++ G1 29DOF 再現実験: 総合報告 (2026-02-18)
+
+### 1. 結論サマリ
+
+**from-scratch FPO++ は G1 29DOF locomotion で現時点 non-viable 寄り。**
+
+- 7回の実験を通じ、安定性と学習信号のトレードオフを解消できなかった
+- 崩壊しない設定 (action_bound=1.5) では cov_adv_logr ≈ 0.006 で学習信号が弱すぎ、歩行を獲得できず
+- 学習信号を強める設定 (action_bound≥2.0) では flow model が崩壊
+- **次のステップ**: PPO warm-start → FPO fine-tune の切り分け実験を1本実施し、from-scratch 固有の問題か実装レベルの問題かを判別
+
+### 2. 再現目的と判定基準
+
+- **目的**: FPO++ (arxiv:2602.02481) の G1 29DOF locomotion での再現
+- **成功条件**: PPO 同等の歩行獲得 (tracking reward 上昇、episode length 延伸)
+- **打ち切り条件**: ハイパラ探索が3段階以上の分岐を経ても改善が見られない場合
+
+### 3. 実験固定条件
+
+| 項目 | 値 |
+|------|-----|
+| 環境 | `LeggedRobotLocomotionManager` |
+| ロボット | `g1_29dof` |
+| 観測 | `g1_29dof_loco_single_wolinvel` |
+| 行動 | `g1_29dof_joint_pos` (action_scale=0.25) |
+| 報酬 | `g1_29dof_loco` |
+| シミュレータ | IsaacSim |
+| Flow steps | 64 |
+| MC samples | 16 |
+| ratio_mode | per_sample |
+| trust_region | aspo |
+| flow_param_mode | velocity |
+
+### 4. 実験タイムライン
+
+| # | 変更点 | 主要観測 (iter) | 判定 |
+|---|--------|----------------|------|
+| 1 | 初期 (epochs=32, clip=0.5, steps=24, mini=4) | cfm_loss ~700K 発散 | 失敗: stage1 clamping なし |
+| 2 | + stage1 clamping 実装 | cfm_loss 安定、delta_loss_std=651, stage2_rate=50% | 失敗: old_loss 陳腐化 |
+| 3 | epochs=12, ratio_log_clip=1.0, cfm_loss_clip=10000 | delta_loss_std=124→改善、cov=0.026 (iter50) | 部分成功B: stage2_rate=50% |
+| 4 | epochs=8 | delta_loss_std=21.7、cov=0.001 (iter63) | 失敗: 信号消失 |
+| 5 | cfm_loss_reduction=sum→mean | cov=0.009(iter73)→-0.018(iter157) | 失敗: 一時回復後崩壊 |
+| 6 | action_bound warmup 0.5→3.0 | warmup中: cov=0.057(iter50, 過去最高)。3.0到達後: 崩壊 | Gate A pass, Gate B fail |
+| 7a | action_bound warmup 0.5→2.0 | warmup中: cov=0.038(iter50)。2.0到達後: 崩壊 | Gate A pass, Gate B fail |
+| 7b | action_bound=1.5 固定 | cov=0.005-0.007安定。reward +0.77(iter159)。iter234でcfm_loss爆発 | **初の安定 run だが歩行未獲得** |
+
+### 5. 因果推論
+
+**確立された因果関係** (同一 run 内での操作で確認):
+- `action_bound ≥ 2.0` → raw_logr_std 爆発 → stage2 clamp 増加 → cov_adv_logr 崩壊
+- `action_bound ≤ 1.5` → raw_logr_std 安定 → stage2_rate < 12% → cov 安定 (ただし低位)
+- `cfm_loss_reduction=sum` → cfm_loss スケール過大 → log_ratio 分散増大
+- `cfm_loss_reduction=mean` → cfm_loss スケール正常化
+
+**相関だが因果未確定**:
+- cov_adv_logr ≈ 0.006 が学習の限界なのか、他の要因で抑制されているのか
+- flow model の iter 200+ での崩壊が action_bound とは独立した固有の不安定性か
+
+### 6. 失敗モード辞書
+
+| モード | 定義 | 主要メトリクス | 対処 |
+|--------|------|---------------|------|
+| CFM 発散 | cfm_loss が指数的に増大 | cfm_loss > 1000, cfm_loss_ratio > 1.5 | stage1 clamping, cfm_loss_clip |
+| Ratio 飽和 | log_ratio が clip 境界に張り付き | stage2_rate > 40%, ratio_p10=e^{-clip} | action_bound 縮小, reduction=mean |
+| 信号消失 | advantage と ratio の相関喪失 | cov_adv_logr < 0.005, sign_agree ≈ 0.50 | action_bound warmup, epochs 削減 |
+| Flow fit 崩壊 | flow model の表現力劣化 | cfm_loss 急増 (>100), raw_logr_mean << -10 | 未解決 |
+| Local minimum | 倒れないが歩かない | reward 横ばい、episode_length 一定 | 未解決 (構造的問題の疑い) |
+
+### 7. 現時点の総合判断
+
+**from-scratch FPO++ の継続を停止する。**
+
+根拠:
+- 安定動作する設定 (action_bound=1.5) で cov_adv_logr ≈ 0.006 は、locomotion 学習に不十分
+- PPO は同一環境で数千 iter で歩行を獲得する
+- 7回の実験で一貫して ratio ベース学習信号の弱さが確認された
+
+**未確定事項**:
+- 実装にバグがある可能性はゼロではない（論文は Humanoid で動作を主張）
+- PPO warm-start → FPO fine-tune で切り分け可能
+
+### 8. 次実験計画: PPO warm-start → FPO fine-tune
+
+**仮説**: FPO++ の from-scratch 学習が弱いのであって、合理的な初期 policy からの fine-tune は機能する
+
+**手順**:
+1. PPO で G1 29DOF を iter 5000 まで学習（歩行獲得を確認）
+2. PPO の actor weights を FPO の flow model に移植（要設計）
+3. FPO fine-tune を iter 500 実行
+4. 報酬と歩行品質を PPO 継続と比較
+
+**評価メトリクス**: tracking reward, episode_length, cov_adv_logr
+
+**Gate**:
+- iter 100: tracking_lin_vel が PPO baseline の 50% 以上を維持
+- 失敗: FPO fine-tune も機能しない → 実装監査へ
+
+### 9. 最終意思決定マトリクス
+
+| warm-start 結果 | 解釈 | 次のアクション |
+|-----------------|------|---------------|
+| fine-tune 成功 (歩行維持+改善) | from-scratch 学習の初期化問題 | FPO++ を warm-start 前提で運用 |
+| fine-tune で性能維持だが改善なし | FPO ratio 学習が PPO に勝る根拠なし | FPO++ 路線保留、PPO に集中 |
+| fine-tune で性能劣化 | FPO 実装に問題の疑い | 実装監査 (ratio 計算、flow loss) |
+
+### 10. 再現用アーティファクト
+
+| 項目 | 値 |
+|------|-----|
+| ブランチ | `feat/fpo` |
+| 実験 config | `g1_29dof_fpo_pp_repro` |
+| 実行コマンド | `python src/holosoma/holosoma/train_agent.py exp:g1-29dof-fpo-pp-repro simulator:isaacsim logger:wandb --training.seed 1` |
+| 最終 config 値 | action_bound=1.5, warmup_iters=0, epochs=8, mini_batches=4, steps=24, ratio_log_clip=1.0, cfm_loss_clip=10000, reduction=mean |
+| 変更ファイル | `config_types/algo.py`, `config_values/loco/g1/experiment.py`, `agents/fpo/fpo_agent.py` |
