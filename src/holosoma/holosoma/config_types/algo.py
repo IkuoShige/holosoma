@@ -16,6 +16,9 @@ class OptimizerConfig:
     weight_decay: float = 0.001
     """Weight decay parameter for the optimizer."""
 
+    betas: tuple[float, float] = (0.9, 0.999)
+    """Beta parameters for Adam-family optimizers."""
+
 
 @dataclass(frozen=True)
 class LayerConfig:
@@ -443,6 +446,9 @@ class FPOConfig:
     action_bound: float = 3.0
     """Scale factor for tanh bounding of ODE output: output = action_bound * tanh(raw)."""
 
+    flow_param_mode: str = "velocity"
+    """Flow parameterization: 'velocity' (target=action-eps) or 'data' (target=action)."""
+
     cfm_reg_coef: float = 0.0
     """Coefficient for direct CFM loss regularization on actor loss (paper: 0, not used)."""
 
@@ -460,6 +466,46 @@ class FPOConfig:
 
     mc_chunk_size: int | None = 16
     """Chunk size along K (MC sample) dimension for compute_flow_loss. None disables chunking."""
+
+    cfm_loss_reduction: str = "sum"
+    """Reduction over action dim in CFM loss: 'sum' (paper-faithful squared L2 norm) or 'mean'."""
+
+    obs_normalization: bool = True
+    """Whether to enable observation normalization (running mean/std)."""
+
+    # Divergence guard parameters
+    divergence_guard_enabled: bool = True
+    """Enable divergence monitoring and early stopping for FPO training."""
+
+    divergence_warmup_iters: int = 50
+    """Number of initial iterations to skip before divergence monitoring activates."""
+
+    div_warn_cfm_ratio: float = 8.0
+    """CFM loss ratio threshold for warning (cfm_loss / max(ema_cfm_loss, 1.0))."""
+
+    div_stop_cfm_ratio: float = 20.0
+    """CFM loss ratio threshold for stop condition."""
+
+    div_hard_cfm_ratio: float = 50.0
+    """CFM loss ratio threshold for immediate stop."""
+
+    div_warn_stage2_rate: float = 0.70
+    """stage2 clamp rate threshold for warning."""
+
+    div_stop_stage2_rate: float = 0.85
+    """stage2 clamp rate threshold for stop condition."""
+
+    div_hard_stage2_rate: float = 0.95
+    """stage2 clamp rate threshold for immediate stop."""
+
+    div_warn_cov_adv_logr: float = -0.002
+    """cov(adv, logr) threshold for warning (triggers when below this value)."""
+
+    div_stop_cov_adv_logr: float = -0.005
+    """cov(adv, logr) threshold for stop condition (triggers when below this value)."""
+
+    div_stop_consecutive: int = 2
+    """Number of consecutive iterations meeting stop criteria before stopping."""
 
 
 @dataclass(frozen=True)

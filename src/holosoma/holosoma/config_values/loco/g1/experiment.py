@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from holosoma.config_types.algo import FPOModuleDictConfig, LayerConfig, ModuleConfig
 from holosoma.config_types.experiment import ExperimentConfig, NightlyConfig, TrainingConfig
 from holosoma.config_values import (
     action,
@@ -58,7 +59,10 @@ g1_29dof_fast_sac = ExperimentConfig(
 g1_29dof_fpo = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_fpo_manager"),
-    algo=replace(algo.fpo, config=replace(algo.fpo.config, num_learning_iterations=25000, use_symmetry=True)),
+    algo=replace(
+        algo.fpo,
+        config=replace(algo.fpo.config, num_learning_iterations=25000, use_symmetry=True, clip_param=0.01, lam=0.5),
+    ),
     simulator=simulator.isaacgym,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
@@ -71,4 +75,123 @@ g1_29dof_fpo = ExperimentConfig(
     reward=reward.g1_29dof_loco,
 )
 
-__all__ = ["g1_29dof", "g1_29dof_fast_sac", "g1_29dof_fpo"]
+g1_29dof_fpo_refdiag = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_fpo_refdiag"),
+    algo=replace(
+        algo.fpo,
+        config=replace(
+            algo.fpo.config,
+            num_learning_iterations=25000,
+            use_symmetry=True,
+            clip_param=0.01,
+            lam=0.2,
+            ratio_mode="legacy_avg",
+            ratio_log_clip=1.0,
+            num_mc_samples=16,
+            mc_chunk_size=16,
+            trust_region_mode="ppo_clip",
+            cfm_reg_coef=0.0,
+        ),
+    ),
+    simulator=simulator.isaacgym,
+    robot=robot.g1_29dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.g1_29dof_loco_single_wolinvel,
+    action=action.g1_29dof_joint_pos,
+    termination=termination.g1_29dof_termination,
+    randomization=randomization.g1_29dof_randomization,
+    command=command.g1_29dof_command,
+    curriculum=curriculum.g1_29dof_curriculum,
+    reward=reward.g1_29dof_loco,
+)
+
+g1_29dof_fpo_data = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_fpo_data"),
+    algo=replace(
+        algo.fpo,
+        config=replace(
+            algo.fpo.config,
+            num_learning_iterations=25000,
+            use_symmetry=True,
+            clip_param=0.01,
+            lam=0.5,
+            flow_param_mode="data",
+            cfm_reg_coef=0.05,
+        ),
+    ),
+    simulator=simulator.isaacgym,
+    robot=robot.g1_29dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.g1_29dof_loco_single_wolinvel,
+    action=action.g1_29dof_joint_pos,
+    termination=termination.g1_29dof_termination,
+    randomization=randomization.g1_29dof_randomization,
+    command=command.g1_29dof_command,
+    curriculum=curriculum.g1_29dof_curriculum,
+    reward=reward.g1_29dof_loco,
+)
+
+g1_29dof_fpo_pp_repro = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_fpo_pp_repro"),
+    algo=replace(
+        algo.fpo,
+        config=replace(
+            algo.fpo.config,
+            num_learning_iterations=25000,
+            use_symmetry=True,
+            num_learning_epochs=32,
+            num_steps_per_env=96,
+            num_mini_batches=16,
+            lam=0.95,
+            clip_param=0.05,
+            cfm_reg_coef=0.0,
+            num_flow_steps=64,
+            num_mc_samples=16,
+            ratio_mode="per_sample",
+            ratio_log_clip=0.5,
+            trust_region_mode="aspo",
+            action_bound=3.0,
+            max_grad_norm=0.5,
+            flow_param_mode="velocity",
+            cfm_loss_reduction="sum",
+            obs_normalization=True,
+            divergence_guard_enabled=True,
+            module_dict=FPOModuleDictConfig(
+                actor=ModuleConfig(
+                    type="MLP",
+                    input_dim=["actor_obs"],
+                    output_dim=["robot_action_dim"],
+                    layer_config=LayerConfig(hidden_dims=[256, 256, 256], activation="ELU"),
+                ),
+                critic=ModuleConfig(
+                    type="MLP",
+                    input_dim=["critic_obs"],
+                    output_dim=[1],
+                    layer_config=LayerConfig(hidden_dims=[768, 768, 768], activation="ELU"),
+                ),
+            ),
+        ),
+    ),
+    simulator=simulator.isaacgym,
+    robot=robot.g1_29dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.g1_29dof_loco_single_wolinvel,
+    action=action.g1_29dof_joint_pos,
+    termination=termination.g1_29dof_termination,
+    randomization=randomization.g1_29dof_randomization,
+    command=command.g1_29dof_command,
+    curriculum=curriculum.g1_29dof_curriculum,
+    reward=reward.g1_29dof_loco,
+)
+
+__all__ = [
+    "g1_29dof",
+    "g1_29dof_fast_sac",
+    "g1_29dof_fpo",
+    "g1_29dof_fpo_data",
+    "g1_29dof_fpo_pp_repro",
+    "g1_29dof_fpo_refdiag",
+]

@@ -165,11 +165,16 @@ class FlowPolicy(nn.Module):
         use_ada_ln: bool = True,
         num_flow_steps: int = 10,
         action_bound: float = 3.0,
+        flow_param_mode: str = "velocity",
     ):
         super().__init__()
+        if flow_param_mode not in ("velocity", "data"):
+            msg = f"flow_param_mode must be 'velocity' or 'data', got '{flow_param_mode}'"
+            raise ValueError(msg)
         self.num_actions = num_actions
         self.num_flow_steps = num_flow_steps
         self.action_bound = action_bound
+        self.flow_param_mode = flow_param_mode
 
         # Process module config to resolve action dim
         module_config = self._process_module_config(module_config, num_actions)
@@ -235,7 +240,7 @@ class FlowPolicy(nn.Module):
         t = torch.rand(batch_size, num_mc_samples, 1, device=device)
         return eps, t
 
-    def compute_flow_loss(self, obs: Tensor, action: Tensor, eps: Tensor, t: Tensor) -> Tensor:
+    def compute_flow_loss(self, obs: Tensor, action: Tensor, eps: Tensor, t: Tensor, reduction: str = "sum") -> Tensor:
         """Compute per-sample CFM loss: ||v_theta(x_t, t; obs) - (action - eps)||^2.
 
         Parameters
@@ -248,6 +253,8 @@ class FlowPolicy(nn.Module):
             Noise samples, shape [B, K, A]
         t : Tensor
             Timestep samples, shape [B, K, 1]
+        reduction : str
+            Reduction over action dim: 'sum' (squared L2 norm, paper default) or 'mean'.
 
         Returns
         -------
@@ -265,14 +272,21 @@ class FlowPolicy(nn.Module):
         # Interpolate
         x_t = self.interpolate_xt(action_expanded, eps_flat, t_flat)
 
-        # Target velocity: action - eps (direction from noise to clean)
-        target_velocity = action_expanded - eps_flat
+        # Target: velocity param -> (action - eps), data param -> action
+        if self.flow_param_mode == "velocity":
+            target_velocity = action_expanded - eps_flat
+        else:
+            target_velocity = action_expanded
 
         # Predicted velocity
         predicted_velocity = self.velocity_field(obs_expanded, x_t, t_flat)
 
-        # Per-sample MSE loss: [B*K, A] -> [B*K, 1] -> [B, K, 1]
-        loss = ((predicted_velocity - target_velocity) ** 2).mean(dim=-1, keepdim=True)
+        # Per-sample loss: [B*K, A] -> [B*K, 1] -> [B, K, 1]
+        sq_diff = (predicted_velocity - target_velocity) ** 2
+        if reduction == "sum":
+            loss = sq_diff.sum(dim=-1, keepdim=True)
+        else:
+            loss = sq_diff.mean(dim=-1, keepdim=True)
         return loss.reshape(b, k, 1)
 
     def act(self, obs_dict: dict[str, Tensor], num_flow_steps: int | None = None) -> Tensor:
@@ -298,25 +312,26 @@ class FlowPolicy(nn.Module):
 
         # Start from pure noise at t=1
         x = torch.randn(obs.shape[0], self.num_actions, device=obs.device)
-        t_val = 1.0
 
-        for _ in range(k):
-            # Use obs.new_full to inherit device/dtype from obs (ONNX-safe)
+        for j in range(k, 0, -1):
+            t_val = j / k  # t >= 1/K > 0, avoids t=0
             t_tensor = obs.new_full((obs.shape[0], 1), t_val)
-            velocity = self.velocity_field(obs, x, t_tensor)
-            # v_theta approximates (action - eps), the CFM target velocity.
-            # x_t = t*eps + (1-t)*action => dx/dt = eps - action = -v_theta
-            # Stepping from t to t-dt: x_{t-dt} = x_t + (-dt)*(-v_theta) = x_t + dt*v_theta
-            x = x + dt * velocity
-            t_val -= dt
+            output = self.velocity_field(obs, x, t_tensor)
+            if self.flow_param_mode == "velocity":
+                x = x + dt * output
+            else:
+                t_prev = (j - 1) / k
+                x = x * (t_prev / t_val) + output * (dt / t_val)
 
         # Bound output via tanh to prevent unbounded actions
         return self.action_bound * torch.tanh(x)
 
     def act_inference(self, obs_dict: dict[str, Tensor], num_flow_steps: int | None = None) -> Tensor:
-        """Generate actions via ODE Euler integration (inference mode, no grad).
+        """Generate actions via ODE Euler integration (deterministic inference).
 
-        Same as act() but wrapped with torch.no_grad().
+        Starts from zeros instead of random noise, making the output fully
+        deterministic for a given observation. Used for evaluation, symmetry
+        loss computation, and ONNX export.
 
         Parameters
         ----------
@@ -330,4 +345,21 @@ class FlowPolicy(nn.Module):
         Tensor
             Generated actions, shape [B, A]
         """
-        return self.act(obs_dict, num_flow_steps=num_flow_steps)
+        obs = obs_dict["actor_obs"]
+        k = num_flow_steps or self.num_flow_steps
+        dt = 1.0 / k
+
+        # Start from zeros (deterministic) instead of randn (stochastic)
+        x = obs.new_zeros(obs.shape[0], self.num_actions)
+
+        for j in range(k, 0, -1):
+            t_val = j / k
+            t_tensor = obs.new_full((obs.shape[0], 1), t_val)
+            output = self.velocity_field(obs, x, t_tensor)
+            if self.flow_param_mode == "velocity":
+                x = x + dt * output
+            else:
+                t_prev = (j - 1) / k
+                x = x * (t_prev / t_val) + output * (dt / t_val)
+
+        return self.action_bound * torch.tanh(x)

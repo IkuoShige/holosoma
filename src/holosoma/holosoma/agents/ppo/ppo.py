@@ -6,12 +6,6 @@ from typing import TypedDict
 
 import torch
 import torch.nn.functional as F
-from loguru import logger
-from rich.console import Console
-from torch import nn
-from torch.distributions import Normal, kl_divergence
-from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
-
 from holosoma.agents.base_algo.base_algo import BaseAlgo
 from holosoma.agents.callbacks.base_callback import RLEvalCallback
 from holosoma.agents.modules.augmentation_utils import SymmetryUtils
@@ -32,6 +26,11 @@ from holosoma.utils.inference_helpers import (
     get_control_gains_from_config,
     get_urdf_text_from_robot_config,
 )
+from loguru import logger
+from rich.console import Console
+from torch import nn
+from torch.distributions import Normal, kl_divergence
+from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
 console = Console()
 
@@ -291,9 +290,17 @@ class PPO(BaseAlgo):
                 self.save(os.path.join(self.log_dir, f"model_{it:05d}.pt"))
                 self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{it:05d}.onnx"))
 
+            if self._should_early_stop(it, loss_dict):
+                logger.warning(f"Early stopping triggered at iteration {it}")
+                break
+
         if self.is_main_process:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.pt"))
             self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.onnx"))
+
+    def _should_early_stop(self, it: int, loss_dict: dict) -> bool:
+        """Hook for subclasses to implement early stopping logic. Returns False by default."""
+        return False
 
     def _rollout_step(self, obs_dict):
         with torch.inference_mode():

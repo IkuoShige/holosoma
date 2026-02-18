@@ -63,6 +63,7 @@ def setup_flow_policy_module(
     use_ada_ln: bool = True,
     num_flow_steps: int = 10,
     action_bound: float = 3.0,
+    flow_param_mode: str = "velocity",
 ):
     return FlowPolicy(
         obs_dim_dict=obs_dim_dict,
@@ -73,4 +74,5 @@ def setup_flow_policy_module(
         use_ada_ln=use_ada_ln,
         num_flow_steps=num_flow_steps,
         action_bound=action_bound,
+        flow_param_mode=flow_param_mode,
     ).to(device)

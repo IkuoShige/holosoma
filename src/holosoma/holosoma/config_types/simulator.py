@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
+import tyro
+from holosoma.config_types.viewer import ViewerConfig
 from pydantic import model_validator
 from pydantic.dataclasses import dataclass
-
-from holosoma.config_types.viewer import ViewerConfig
 
 
 class MujocoBackend(str, Enum):
@@ -387,10 +387,10 @@ class SceneConfig:
     asset_root: str | None = None
     """Optional root directory for relative asset paths."""
 
-    scene_files: list[SceneFileConfig] | None = None  # Renamed from sources
+    scene_files: Annotated[list[SceneFileConfig] | None, tyro.conf.Suppress] = None  # Renamed from sources
     """List of scene files (USD/URDF) to load."""
 
-    rigid_objects: list[RigidObjectConfig] | None = None
+    rigid_objects: Annotated[list[RigidObjectConfig] | None, tyro.conf.Suppress] = None
     """Standalone rigid objects to instantiate."""
 
     env_spacing: float = 20.0
