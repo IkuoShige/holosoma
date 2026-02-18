@@ -384,6 +384,18 @@ class FPOAgent(PPO):
             clip_val = self.config.ratio_log_clip
             stage2_rate = (diff.abs() >= clip_val).float().mean()
 
+            # Raw log_ratio diagnostics (before stage2 clamp)
+            raw_logr = diff.squeeze(-1)  # [B, K] or [B]
+            if raw_logr.dim() == 2:
+                raw_logr_avg = raw_logr.mean(dim=1)  # [B]
+            else:
+                raw_logr_avg = raw_logr  # [B]
+            raw_logr_flat = raw_logr.reshape(-1)
+            raw_logr_mean = raw_logr_flat.mean()
+            raw_logr_std = raw_logr_flat.std()
+            raw_logr_p10 = torch.quantile(raw_logr_flat, 0.1)
+            raw_logr_p90 = torch.quantile(raw_logr_flat, 0.9)
+
             # Cov(A, log_ratio) and sign agreement
             log_r_per = torch.log(ratio.detach().clamp(min=1e-8))  # [B,K] or [B]
             if log_r_per.dim() == 2:
@@ -392,6 +404,7 @@ class FPOAgent(PPO):
                 log_r_avg = log_r_per  # [B]
             adv_d = adv.detach()
             cov_a_logr = ((adv_d - adv_d.mean()) * (log_r_avg - log_r_avg.mean())).mean()
+            cov_a_raw_logr = ((adv_d - adv_d.mean()) * (raw_logr_avg - raw_logr_avg.mean())).mean()
             sign_agree = ((adv_d > 0) == (log_r_avg > 0)).float().mean()
 
             # --- ratio停滞の因果識別用 診断指標 ---
@@ -437,6 +450,11 @@ class FPOAgent(PPO):
             "fpo_delta_loss_std": fpo_delta_loss_std,
             "fpo_logr_std": fpo_logr_std,
             "fpo_clipfrac": fpo_clipfrac,
+            "fpo_raw_logr_mean": raw_logr_mean,
+            "fpo_raw_logr_std": raw_logr_std,
+            "fpo_raw_logr_p10": raw_logr_p10,
+            "fpo_raw_logr_p90": raw_logr_p90,
+            "fpo_cov_adv_raw_logr": cov_a_raw_logr,
         }
 
     def _update_algo_step(self, minibatch, loss_dict):
