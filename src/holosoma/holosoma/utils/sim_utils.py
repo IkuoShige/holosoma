@@ -309,9 +309,18 @@ def close_simulation_app(simulation_app):
         except Exception as e:
             logger.warning(f"Could not patch close_stage method: {e}")
 
-        # Now close the app
-        simulation_app.close(wait_for_replicator=False)
-        logger.info("Simulation app closed.")
+        # Now close the app — run in a thread with timeout since .close() often hangs
+        import os  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+
+        close_thread = threading.Thread(target=lambda: simulation_app.close(wait_for_replicator=False), daemon=True)
+        close_thread.start()
+        close_thread.join(timeout=10)
+        if close_thread.is_alive():
+            logger.warning("simulation_app.close() timed out after 10s, forcing exit")
+        else:
+            logger.info("Simulation app closed.")
+        os._exit(0)
     else:
         logger.info("Simulation app closed.")
 
