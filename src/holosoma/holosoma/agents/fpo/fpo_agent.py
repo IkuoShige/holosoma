@@ -118,7 +118,18 @@ class FPOAgent(PPO):
             )
         return torch.cat(chunks, dim=1)
 
+    def _update_action_bound(self):
+        """Update actor.action_bound based on warmup schedule."""
+        warmup_iters = self.config.action_bound_warmup_iters
+        if warmup_iters <= 0:
+            return
+        b_full = self.config.action_bound
+        b_init = b_full * self.config.action_bound_warmup_init_factor
+        progress = min(self.current_learning_iteration / warmup_iters, 1.0)
+        self.actor.action_bound = b_init + progress * (b_full - b_init)
+
     def _rollout_step(self, obs_dict):
+        self._update_action_bound()
         with torch.inference_mode():
             for _ in range(self.config.num_steps_per_env):
                 # Environment step
@@ -455,6 +466,7 @@ class FPOAgent(PPO):
             "fpo_raw_logr_p10": raw_logr_p10,
             "fpo_raw_logr_p90": raw_logr_p90,
             "fpo_cov_adv_raw_logr": cov_a_raw_logr,
+            "fpo_action_bound": self.actor.action_bound,
         }
 
     def _update_algo_step(self, minibatch, loss_dict):

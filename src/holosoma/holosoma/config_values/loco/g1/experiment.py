@@ -154,6 +154,7 @@ g1_29dof_fpo_pp_repro = ExperimentConfig(
             ratio_log_clip=1.0,
             trust_region_mode="aspo",
             action_bound=3.0,
+            action_bound_warmup_iters=100,
             max_grad_norm=0.5,
             flow_param_mode="velocity",
             cfm_loss_reduction="mean",

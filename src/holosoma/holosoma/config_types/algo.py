@@ -446,6 +446,12 @@ class FPOConfig:
     action_bound: float = 3.0
     """Scale factor for tanh bounding of ODE output: output = action_bound * tanh(raw)."""
 
+    action_bound_warmup_iters: int = 0
+    """Number of iterations to linearly ramp action_bound from init to full value. 0 = disabled."""
+
+    action_bound_warmup_init_factor: float = 1.0 / 6.0
+    """Initial action_bound = action_bound * this factor (default: 0.5 when action_bound=3.0)."""
+
     flow_param_mode: str = "velocity"
     """Flow parameterization: 'velocity' (target=action-eps) or 'data' (target=action)."""
 
