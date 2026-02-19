@@ -256,11 +256,69 @@ g1_29dof_fpo_pp_warmstart_probe = ExperimentConfig(
     reward=reward.g1_29dof_loco,
 )
 
+g1_29dof_fpo_pp_paper_default = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_fpo_pp_paper_default"),
+    algo=replace(
+        algo.fpo,
+        config=replace(
+            algo.fpo.config,
+            num_learning_iterations=2000,
+            use_symmetry=True,
+            # Paper Table A.1 exact values for locomotion
+            num_learning_epochs=32,
+            num_steps_per_env=24,
+            num_mini_batches=4,
+            lam=0.95,
+            clip_param=0.05,
+            cfm_reg_coef=0.0,
+            num_flow_steps=64,
+            num_mc_samples=16,
+            ratio_mode="per_sample",
+            ratio_log_clip=0.5,
+            trust_region_mode="aspo",
+            action_bound=3.0,
+            action_bound_warmup_iters=0,
+            max_grad_norm=0.5,
+            flow_param_mode="velocity",
+            cfm_loss_reduction="sum",
+            cfm_loss_clip=None,
+            obs_normalization=True,
+            divergence_guard_enabled=False,  # Don't auto-stop; observe the full divergence
+            module_dict=FPOModuleDictConfig(
+                actor=ModuleConfig(
+                    type="MLP",
+                    input_dim=["actor_obs"],
+                    output_dim=["robot_action_dim"],
+                    layer_config=LayerConfig(hidden_dims=[256, 256, 256], activation="ELU"),
+                ),
+                critic=ModuleConfig(
+                    type="MLP",
+                    input_dim=["critic_obs"],
+                    output_dim=[1],
+                    layer_config=LayerConfig(hidden_dims=[768, 768, 768], activation="ELU"),
+                ),
+            ),
+        ),
+    ),
+    simulator=simulator.isaacgym,
+    robot=robot.g1_29dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.g1_29dof_loco_single_wolinvel,
+    action=action.g1_29dof_joint_pos,
+    termination=termination.g1_29dof_termination,
+    randomization=randomization.g1_29dof_randomization,
+    command=command.g1_29dof_command,
+    curriculum=curriculum.g1_29dof_curriculum,
+    reward=reward.g1_29dof_loco,
+)
+
 __all__ = [
     "g1_29dof",
     "g1_29dof_fast_sac",
     "g1_29dof_fpo",
     "g1_29dof_fpo_data",
+    "g1_29dof_fpo_pp_paper_default",
     "g1_29dof_fpo_pp_repro",
     "g1_29dof_fpo_pp_warmstart_probe",
     "g1_29dof_fpo_refdiag",

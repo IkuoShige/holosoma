@@ -43,6 +43,8 @@ class FPOAgent(PPO):
         super().__init__(env, config, log_dir, device, multi_gpu_cfg)
         self._ema_cfm_loss: float | None = None
         self._div_consecutive_count: int = 0
+        self._raw_adv_mean: float = 0.0
+        self._raw_adv_std: float = 0.0
 
     def _init_obs_keys(self):
         self.actor_obs_keys = self.config.module_dict.actor.input_dim
@@ -211,6 +213,16 @@ class FPOAgent(PPO):
             self.actor.reset(dones)
 
         logger.info("BC warm-start complete")
+
+    def _compute_returns_and_advantages(self, last_values, values, dones, rewards):
+        """Override to capture raw advantage stats before normalization."""
+        # Compute raw advantages for diagnostic logging
+        returns, advantages = super()._compute_returns_and_advantages(last_values, values, dones, rewards)
+        # Recompute raw (unnormalized) for diagnostics — cheap, just a subtraction
+        raw_adv = returns - values
+        self._raw_adv_mean = raw_adv.mean().item()
+        self._raw_adv_std = raw_adv.std().item()
+        return returns, advantages
 
     def learn(self):
         # Run BC warm-start before normal training (only at iteration 0)
@@ -560,6 +572,8 @@ class FPOAgent(PPO):
             "fpo_raw_logr_p90": raw_logr_p90,
             "fpo_cov_adv_raw_logr": cov_a_raw_logr,
             "fpo_action_bound": self.actor.action_bound,
+            "fpo_raw_adv_mean": self._raw_adv_mean,
+            "fpo_raw_adv_std": self._raw_adv_std,
         }
 
     def _update_algo_step(self, minibatch, loss_dict):
@@ -617,6 +631,8 @@ class FPOAgent(PPO):
                 "fpo_logr_std": loss_dict.get("fpo_logr_std", 0.0),
                 "fpo_clipfrac": loss_dict.get("fpo_clipfrac", 0.0),
                 "fpo_actor_grad_norm": loss_dict.get("fpo_actor_grad_norm", 0.0),
+                "fpo_raw_adv_mean": loss_dict.get("fpo_raw_adv_mean", 0.0),
+                "fpo_raw_adv_std": loss_dict.get("fpo_raw_adv_std", 0.0),
             },
         }
         loss_dict["actor_learning_rate"] = self.actor_learning_rate
