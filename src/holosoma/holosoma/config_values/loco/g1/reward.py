@@ -190,4 +190,22 @@ g1_29dof_loco_fast_sac = RewardManagerCfg(
     },
 )
 
-__all__ = ["g1_29dof_loco", "g1_29dof_loco_fast_sac"]
+g1_29dof_loco_fpo = RewardManagerCfg(
+    only_positive_rewards=False,
+    terms={
+        **g1_29dof_loco.terms,
+        "termination": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:termination",
+            weight=-200.0,
+            params={},
+        ),
+        "penalty_action_rate": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
+            weight=0.0,
+            params={},
+            tags=["penalty_curriculum"],
+        ),
+    },
+)
+
+__all__ = ["g1_29dof_loco", "g1_29dof_loco_fast_sac", "g1_29dof_loco_fpo"]

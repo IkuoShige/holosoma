@@ -311,7 +311,7 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum,
-    reward=reward.g1_29dof_loco,
+    reward=reward.g1_29dof_loco_fpo,
 )
 
 __all__ = [
