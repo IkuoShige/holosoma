@@ -56,4 +56,44 @@ g1_29dof_curriculum_fast_sac = CurriculumManagerCfg(
     step_terms={},
 )
 
-__all__ = ["g1_29dof_curriculum", "g1_29dof_curriculum_fast_sac"]
+g1_29dof_curriculum_fpo = CurriculumManagerCfg(
+    params={
+        "num_compute_average_epl": 1000,
+    },
+    setup_terms={
+        "average_episode_tracker": CurriculumTermCfg(
+            func="holosoma.managers.curriculum.terms.locomotion:AverageEpisodeLengthTracker",
+            params={},
+        ),
+        "penalty_curriculum": CurriculumTermCfg(
+            func="holosoma.managers.curriculum.terms.locomotion:PenaltyCurriculum",
+            params={
+                "enabled": True,
+                "tag": "penalty_curriculum",
+                "initial_scale": 0.1,
+                "min_scale": 0.0,
+                "max_scale": 1.0,
+                "level_down_threshold": 150.0,
+                "level_up_threshold": 750.0,
+                "degree": 0.00025,
+            },
+        ),
+        "action_rate_warmup": CurriculumTermCfg(
+            func="holosoma.managers.curriculum.terms.locomotion:PenaltyCurriculum",
+            params={
+                "enabled": True,
+                "tag": "action_rate_warmup",
+                "initial_scale": 0.001,
+                "min_scale": 0.0,
+                "max_scale": 1.0,
+                "level_down_threshold": 20.0,
+                "level_up_threshold": 40.0,
+                "degree": 0.0005,
+            },
+        ),
+    },
+    reset_terms={},
+    step_terms={},
+)
+
+__all__ = ["g1_29dof_curriculum", "g1_29dof_curriculum_fast_sac", "g1_29dof_curriculum_fpo"]

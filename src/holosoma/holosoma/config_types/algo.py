@@ -484,11 +484,28 @@ class FPOConfig:
     """Trust region mode: 'aspo' (Asymmetric SPO, paper default) or 'ppo_clip' (standard PPO clipping)."""
 
     cfm_loss_clip: float | None = None
-    """Per-sample total CFM loss clamp upper bound. None disables. Deprecated: prefer cfm_loss_dim_clip."""
+    """Per-sample total CFM loss clamp upper bound (stage 1 δ). None disables."""
+
+    cfm_loss_clip_adaptive: bool = False
+    """Enable adaptive δ: auto-adjust cfm_loss_clip to maintain stage1_rate in target range."""
+
+    cfm_loss_clip_quantile: float = 0.8
+    """Quantile of CFM loss distribution to use as adaptive δ target."""
+
+    cfm_loss_clip_ema_alpha: float = 0.1
+    """EMA smoothing factor for adaptive δ updates (lower = smoother)."""
+
+    cfm_loss_clip_min: float = 4.0
+    """Lower bound for adaptive δ."""
+
+    cfm_loss_clip_max: float = 30.0
+    """Upper bound for adaptive δ."""
+
+    cfm_loss_clip_update_interval: int = 10
+    """Update adaptive δ every N iterations."""
 
     cfm_loss_dim_clip: float | None = None
-    """Per-dimension squared-error clamp (paper Appendix C.2 stage 1, δ). Applied before sum/mean reduction.
-    Prevents extreme per-dimension errors from dominating the importance ratio. Typical: 2-4."""
+    """Per-dimension squared-error clamp. Applied before sum/mean reduction. Usually not needed with mean reduction."""
 
     mc_chunk_size: int | None = 16
     """Chunk size along K (MC sample) dimension for compute_flow_loss. None disables chunking."""

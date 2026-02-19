@@ -282,7 +282,13 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
             max_grad_norm=0.5,
             flow_param_mode="velocity",
             cfm_loss_reduction="mean",  # /action_dim で ratio スケールを O(1) に正規化
-            cfm_loss_clip=4.0,  # Stage 1: total clamp δ=4 (mean loss ≈4.5 に対して有効)
+            cfm_loss_clip=10.0,  # Stage 1: initial δ (overridden by adaptive)
+            cfm_loss_clip_adaptive=True,  # Auto-adjust δ to maintain stage1_rate 10-30%
+            cfm_loss_clip_quantile=0.8,
+            cfm_loss_clip_ema_alpha=0.1,
+            cfm_loss_clip_min=4.0,
+            cfm_loss_clip_max=30.0,
+            cfm_loss_clip_update_interval=10,
             cfm_loss_dim_clip=None,
             obs_normalization=True,
             divergence_guard_enabled=False,  # Don't auto-stop; observe the full divergence
@@ -310,7 +316,7 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
-    curriculum=curriculum.g1_29dof_curriculum,
+    curriculum=curriculum.g1_29dof_curriculum_fpo,
     reward=reward.g1_29dof_loco_fpo,
 )
 

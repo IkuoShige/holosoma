@@ -45,6 +45,8 @@ class FPOAgent(PPO):
         self._div_consecutive_count: int = 0
         self._raw_adv_mean: float = 0.0
         self._raw_adv_std: float = 0.0
+        # Adaptive δ: mutable clip value initialized from config
+        self._adaptive_cfm_loss_clip: float = config.cfm_loss_clip if config.cfm_loss_clip is not None else 10.0
 
     def _init_obs_keys(self):
         self.actor_obs_keys = self.config.module_dict.actor.input_dim
@@ -314,6 +316,20 @@ class FPOAgent(PPO):
             self.storage["returns"] = returns
             self.storage["advantages"] = advantages
 
+            # Adaptive δ: update cfm_loss_clip from rollout loss distribution
+            if self.config.cfm_loss_clip_adaptive:
+                interval = self.config.cfm_loss_clip_update_interval
+                if self.current_learning_iteration % interval == 0:
+                    all_old_loss = self.storage["flow_old_loss"].reshape(-1)  # flatten [steps*B*K]
+                    q_target = torch.quantile(all_old_loss, self.config.cfm_loss_clip_quantile).item()
+                    q_target = max(self.config.cfm_loss_clip_min, min(self.config.cfm_loss_clip_max, q_target))
+                    alpha = self.config.cfm_loss_clip_ema_alpha
+                    self._adaptive_cfm_loss_clip = alpha * q_target + (1.0 - alpha) * self._adaptive_cfm_loss_clip
+                    logger.info(
+                        f"Adaptive δ: cfm_loss_clip={self._adaptive_cfm_loss_clip:.2f} "
+                        f"(q{self.config.cfm_loss_clip_quantile}={q_target:.2f})"
+                    )
+
         return obs_dict
 
     def _compute_fpo_ratio(self, old_loss: torch.Tensor, new_loss: torch.Tensor) -> torch.Tensor:
@@ -335,7 +351,11 @@ class FPOAgent(PPO):
         clip_val = self.config.ratio_log_clip
 
         # Stage 1: clamp individual CFM losses before taking differences
-        if self.config.cfm_loss_clip is not None:
+        if self.config.cfm_loss_clip_adaptive:
+            clip = self._adaptive_cfm_loss_clip
+            old_loss = old_loss.clamp(max=clip)
+            new_loss = new_loss.clamp(max=clip)
+        elif self.config.cfm_loss_clip is not None:
             old_loss = old_loss.clamp(max=self.config.cfm_loss_clip)
             new_loss = new_loss.clamp(max=self.config.cfm_loss_clip)
 
@@ -488,10 +508,15 @@ class FPOAgent(PPO):
             ratio_p50 = torch.quantile(ratio_flat, 0.5)
             ratio_p90 = torch.quantile(ratio_flat, 0.9)
 
-            # Clamp firing rates
+            # Clamp firing rates (use adaptive clip if enabled)
             old_l = flow_old_loss.detach()
             new_l = new_loss.detach()
-            if self.config.cfm_loss_clip is not None:
+            if self.config.cfm_loss_clip_adaptive:
+                s1_clip = self._adaptive_cfm_loss_clip
+                stage1_rate = ((old_l >= s1_clip) | (new_l >= s1_clip)).float().mean()
+                old_l = old_l.clamp(max=s1_clip)
+                new_l = new_l.clamp(max=s1_clip)
+            elif self.config.cfm_loss_clip is not None:
                 stage1_rate = (
                     ((old_l >= self.config.cfm_loss_clip) | (new_l >= self.config.cfm_loss_clip)).float().mean()
                 )
@@ -575,6 +600,7 @@ class FPOAgent(PPO):
             "fpo_raw_logr_p90": raw_logr_p90,
             "fpo_cov_adv_raw_logr": cov_a_raw_logr,
             "fpo_action_bound": self.actor.action_bound,
+            "fpo_adaptive_delta": self._adaptive_cfm_loss_clip,
             "fpo_raw_adv_mean": self._raw_adv_mean,
             "fpo_raw_adv_std": self._raw_adv_std,
         }

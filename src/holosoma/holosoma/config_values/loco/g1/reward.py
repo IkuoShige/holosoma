@@ -196,14 +196,14 @@ g1_29dof_loco_fpo = RewardManagerCfg(
         **g1_29dof_loco.terms,
         "termination": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:termination",
-            weight=-200.0,
+            weight=-2000.0,
             params={},
         ),
         "penalty_action_rate": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
-            weight=0.0,
+            weight=-2.0,
             params={},
-            tags=["penalty_curriculum"],
+            tags=["action_rate_warmup"],
         ),
     },
 )
