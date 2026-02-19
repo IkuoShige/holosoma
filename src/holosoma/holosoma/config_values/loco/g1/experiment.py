@@ -265,8 +265,9 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
             algo.fpo.config,
             num_learning_iterations=2000,
             use_symmetry=True,
-            # Paper Table A.1 exact values for locomotion
-            num_learning_epochs=32,
+            # Paper Table A.1 base; epochs reduced 32→8 to fix old_loss staleness
+            # 128 gradient updates/iter → 32: keeps old_loss relevant across training
+            num_learning_epochs=8,
             num_steps_per_env=24,
             num_mini_batches=4,
             lam=0.95,
@@ -275,7 +276,7 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
             num_flow_steps=64,
             num_mc_samples=16,
             ratio_mode="per_sample",
-            ratio_log_clip=0.5,
+            ratio_log_clip=1.0,  # 0.5→1.0: rho_max=e^1=2.72, more signal with less staleness
             trust_region_mode="aspo",
             action_bound=3.0,
             action_bound_warmup_iters=0,

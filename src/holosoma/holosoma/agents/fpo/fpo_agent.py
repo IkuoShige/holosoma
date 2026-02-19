@@ -45,6 +45,8 @@ class FPOAgent(PPO):
         self._div_consecutive_count: int = 0
         self._raw_adv_mean: float = 0.0
         self._raw_adv_std: float = 0.0
+        self._fall_rate: float = 0.0
+        self._action_rate_weight: float = 0.0
         # Adaptive δ: mutable clip value initialized from config
         self._adaptive_cfm_loss_clip: float = config.cfm_loss_clip if config.cfm_loss_clip is not None else 10.0
 
@@ -240,6 +242,8 @@ class FPOAgent(PPO):
 
     def _rollout_step(self, obs_dict):
         self._update_action_bound()
+        total_falls = 0
+        total_dones = 0
         with torch.inference_mode():
             for _ in range(self.config.num_steps_per_env):
                 # Environment step
@@ -265,6 +269,15 @@ class FPOAgent(PPO):
                 for obs_key in obs_dict:
                     obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
                 rewards, dones = rewards.to(self.device), dones.to(self.device)
+
+                # Track fall rate: count true terminations vs timeouts
+                dones_bool = dones > 0
+                n_dones = dones_bool.sum().item()
+                if n_dones > 0:
+                    time_outs = infos["time_outs"].to(self.device)
+                    n_falls = (dones_bool & ~time_outs).sum().item()
+                    total_falls += n_falls
+                    total_dones += n_dones
 
                 # Compute bootstrap value for timeouts
                 final_rewards = torch.zeros_like(rewards)
@@ -329,6 +342,15 @@ class FPOAgent(PPO):
                         f"Adaptive δ: cfm_loss_clip={self._adaptive_cfm_loss_clip:.2f} "
                         f"(q{self.config.cfm_loss_clip_quantile}={q_target:.2f})"
                     )
+
+        # Per-iteration diagnostics: fall rate and action_rate penalty weight
+        self._fall_rate = total_falls / max(total_dones, 1) if total_dones > 0 else 0.0
+        if hasattr(self.env, "reward_manager") and self.env.reward_manager is not None:
+            try:
+                ar_cfg = self.env.reward_manager.get_term_cfg("penalty_action_rate")
+                self._action_rate_weight = ar_cfg.weight
+            except KeyError:
+                self._action_rate_weight = 0.0
 
         return obs_dict
 
@@ -603,6 +625,8 @@ class FPOAgent(PPO):
             "fpo_adaptive_delta": self._adaptive_cfm_loss_clip,
             "fpo_raw_adv_mean": self._raw_adv_mean,
             "fpo_raw_adv_std": self._raw_adv_std,
+            "fpo_fall_rate": self._fall_rate,
+            "fpo_action_rate_weight": self._action_rate_weight,
         }
 
     def _update_algo_step(self, minibatch, loss_dict):
@@ -662,6 +686,8 @@ class FPOAgent(PPO):
                 "fpo_actor_grad_norm": loss_dict.get("fpo_actor_grad_norm", 0.0),
                 "fpo_raw_adv_mean": loss_dict.get("fpo_raw_adv_mean", 0.0),
                 "fpo_raw_adv_std": loss_dict.get("fpo_raw_adv_std", 0.0),
+                "fpo_fall_rate": loss_dict.get("fpo_fall_rate", 0.0),
+                "fpo_action_rate_weight": loss_dict.get("fpo_action_rate_weight", 0.0),
             },
         }
         loss_dict["actor_learning_rate"] = self.actor_learning_rate
