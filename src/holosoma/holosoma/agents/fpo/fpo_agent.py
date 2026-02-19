@@ -110,14 +110,17 @@ class FPOAgent(PPO):
         """
         chunk_size = self.config.mc_chunk_size
         reduction = self.config.cfm_loss_reduction
+        dim_clip = self.config.cfm_loss_dim_clip
         k = eps.shape[1]
         if chunk_size is None or k <= chunk_size:
-            return self.actor.compute_flow_loss(obs, action, eps, t, reduction=reduction)
+            return self.actor.compute_flow_loss(obs, action, eps, t, reduction=reduction, dim_clip=dim_clip)
         chunks = []
         for start in range(0, k, chunk_size):
             end = min(start + chunk_size, k)
             chunks.append(
-                self.actor.compute_flow_loss(obs, action, eps[:, start:end], t[:, start:end], reduction=reduction)
+                self.actor.compute_flow_loss(
+                    obs, action, eps[:, start:end], t[:, start:end], reduction=reduction, dim_clip=dim_clip
+                )
             )
         return torch.cat(chunks, dim=1)
 

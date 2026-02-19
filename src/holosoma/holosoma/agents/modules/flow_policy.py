@@ -240,7 +240,9 @@ class FlowPolicy(nn.Module):
         t = torch.rand(batch_size, num_mc_samples, 1, device=device)
         return eps, t
 
-    def compute_flow_loss(self, obs: Tensor, action: Tensor, eps: Tensor, t: Tensor, reduction: str = "sum") -> Tensor:
+    def compute_flow_loss(
+        self, obs: Tensor, action: Tensor, eps: Tensor, t: Tensor, reduction: str = "sum", dim_clip: float | None = None
+    ) -> Tensor:
         """Compute per-sample CFM loss: ||v_theta(x_t, t; obs) - (action - eps)||^2.
 
         Parameters
@@ -255,6 +257,8 @@ class FlowPolicy(nn.Module):
             Timestep samples, shape [B, K, 1]
         reduction : str
             Reduction over action dim: 'sum' (squared L2 norm, paper default) or 'mean'.
+        dim_clip : float | None
+            Per-dimension squared-error clamp (paper Appendix C.2, δ). Applied before reduction.
 
         Returns
         -------
@@ -283,6 +287,8 @@ class FlowPolicy(nn.Module):
 
         # Per-sample loss: [B*K, A] -> [B*K, 1] -> [B, K, 1]
         sq_diff = (predicted_velocity - target_velocity) ** 2
+        if dim_clip is not None:
+            sq_diff = sq_diff.clamp(max=dim_clip)
         if reduction == "sum":
             loss = sq_diff.sum(dim=-1, keepdim=True)
         else:

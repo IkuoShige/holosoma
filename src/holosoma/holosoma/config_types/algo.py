@@ -484,7 +484,11 @@ class FPOConfig:
     """Trust region mode: 'aspo' (Asymmetric SPO, paper default) or 'ppo_clip' (standard PPO clipping)."""
 
     cfm_loss_clip: float | None = None
-    """Per-sample CFM loss clamp upper bound (two-stage clamp stage 1). None disables."""
+    """Per-sample total CFM loss clamp upper bound. None disables. Deprecated: prefer cfm_loss_dim_clip."""
+
+    cfm_loss_dim_clip: float | None = None
+    """Per-dimension squared-error clamp (paper Appendix C.2 stage 1, δ). Applied before sum/mean reduction.
+    Prevents extreme per-dimension errors from dominating the importance ratio. Typical: 2-4."""
 
     mc_chunk_size: int | None = 16
     """Chunk size along K (MC sample) dimension for compute_flow_loss. None disables chunking."""

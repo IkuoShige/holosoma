@@ -283,6 +283,7 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
             flow_param_mode="velocity",
             cfm_loss_reduction="sum",
             cfm_loss_clip=None,
+            cfm_loss_dim_clip=4.0,  # Paper Appendix C.2 stage 1: per-dimension clamp δ=4
             obs_normalization=True,
             divergence_guard_enabled=False,  # Don't auto-stop; observe the full divergence
             module_dict=FPOModuleDictConfig(
