@@ -281,9 +281,9 @@ g1_29dof_fpo_pp_paper_default = ExperimentConfig(
             action_bound_warmup_iters=0,
             max_grad_norm=0.5,
             flow_param_mode="velocity",
-            cfm_loss_reduction="sum",
-            cfm_loss_clip=None,
-            cfm_loss_dim_clip=4.0,  # Paper Appendix C.2 stage 1: per-dimension clamp δ=4
+            cfm_loss_reduction="mean",  # /action_dim で ratio スケールを O(1) に正規化
+            cfm_loss_clip=4.0,  # Stage 1: total clamp δ=4 (mean loss ≈4.5 に対して有効)
+            cfm_loss_dim_clip=None,
             obs_normalization=True,
             divergence_guard_enabled=False,  # Don't auto-stop; observe the full divergence
             module_dict=FPOModuleDictConfig(
