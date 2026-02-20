@@ -54,9 +54,16 @@ g1_29dof_wbt = InferenceConfig(
     task=task.wbt,
 )
 
+k1_22dof_loco = InferenceConfig(
+    robot=robot.k1_22dof,
+    observation=observation.loco_k1_22dof,
+    task=task.locomotion,
+)
+
 DEFAULTS = {
     "g1-29dof-loco": g1_29dof_loco,
     "t1-29dof-loco": t1_29dof_loco,
+    "k1-22dof-loco": k1_22dof_loco,
     "g1-29dof-wbt": g1_29dof_wbt,
 }
 

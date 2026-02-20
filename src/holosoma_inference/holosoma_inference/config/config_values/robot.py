@@ -187,12 +187,85 @@ t1_29dof = RobotConfig(
 
 
 # =============================================================================
+# K1 Robot Config
+# =============================================================================
+
+k1_22dof = RobotConfig(
+    # Identity
+    robot_type="k1_22dof",
+    robot="k1",
+
+    # SDK Configuration
+    sdk_type="booster",
+    motor_type="serial",
+    message_type="HG",
+    use_sensor=False,
+
+    # Dimensions
+    num_motors=22,
+    num_joints=22,
+    num_upper_body_joints=10,  # head (2) + arms (8)
+
+    # Default Positions
+    default_dof_angles=(
+        0.0, 0.0,  # head (yaw, pitch)
+        0.2, -1.35, 0.0, -0.5,  # left arm
+        0.2, 1.35, 0.0, 0.5,  # right arm
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,  # left leg
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,  # right leg
+    ),
+    default_motor_angles=(
+        0.0, 0.0,  # head
+        0.2, -1.35, 0.0, -0.5,  # left arm
+        0.2, 1.35, 0.0, 0.5,  # right arm
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,  # left leg
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,  # right leg
+    ),
+
+    # Mappings
+    motor2joint=tuple(range(22)),  # Identity mapping
+    joint2motor=tuple(range(22)),  # Identity mapping
+    dof_names=(
+        "AAHead_yaw", "Head_pitch",
+        "ALeft_Shoulder_Pitch", "Left_Shoulder_Roll", "Left_Elbow_Pitch", "Left_Elbow_Yaw",
+        "ARight_Shoulder_Pitch", "Right_Shoulder_Roll", "Right_Elbow_Pitch", "Right_Elbow_Yaw",
+        "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw",
+        "Left_Knee_Pitch", "Left_Ankle_Pitch", "Left_Ankle_Roll",
+        "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw",
+        "Right_Knee_Pitch", "Right_Ankle_Pitch", "Right_Ankle_Roll",
+    ),
+    dof_names_upper_body=(
+        "AAHead_yaw", "Head_pitch",
+        "ALeft_Shoulder_Pitch", "Left_Shoulder_Roll", "Left_Elbow_Pitch", "Left_Elbow_Yaw",
+        "ARight_Shoulder_Pitch", "Right_Shoulder_Roll", "Right_Elbow_Pitch", "Right_Elbow_Yaw",
+    ),
+    dof_names_lower_body=(
+        "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw",
+        "Left_Knee_Pitch", "Left_Ankle_Pitch", "Left_Ankle_Roll",
+        "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw",
+        "Right_Knee_Pitch", "Right_Ankle_Pitch", "Right_Ankle_Roll",
+    ),
+
+    # Link Names
+    torso_link_name="Trunk",
+    left_hand_link_name=None,
+    right_hand_link_name=None,
+
+    # Set unitree-specific values to `None`
+    unitree_legged_const=None,
+    weak_motor_joint_index=None,
+    motion=None,
+)
+
+
+# =============================================================================
 # Default Configurations Dictionary
 # =============================================================================
 
 DEFAULTS = {
     "g1-29dof": g1_29dof,
     "t1-29dof": t1_29dof,
+    "k1-22dof": k1_22dof,
 }
 """Dictionary of all available robot configurations.
 
