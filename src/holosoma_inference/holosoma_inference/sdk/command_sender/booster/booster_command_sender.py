@@ -29,8 +29,9 @@ class BoosterCommandSender(BasicCommandSender):
             self.lowcmd_publisher_.InitChannel()
             self.client.Init()
             self.init_booster_low_cmd()
-            self.create_prepare_cmd(self.low_cmd, self.config)
-            self._send_cmd(self.low_cmd)
+            # NOTE: Do NOT send prepare command (kp=0) before ChangeMode.
+            # If the robot is already in custom mode (e.g. re-running the script),
+            # a kp=0 command would remove all motor stiffness and collapse the robot.
             self.client.ChangeMode(RobotMode.kCustom)
             self.dof_names = self.config.dof_names
             self.dof_names_parallel_mech = self.config.dof_names_parallel_mech
@@ -69,6 +70,16 @@ class BoosterCommandSender(BasicCommandSender):
             kp_override=kp_override,
             kd_override=kd_override,
         )
+
+        # Debug: log motor command values periodically
+        if not hasattr(self, "_send_count"):
+            self._send_count = 0
+        self._send_count += 1
+        if self._send_count % 250 == 1:  # Log every 5 seconds at 50Hz
+            mc = self.low_cmd.motor_cmd
+            print(f"[CMD DEBUG] count={self._send_count} motors={len(mc)}")
+            print(f"  motor[0]: q={mc[0].q:.3f} kp={mc[0].kp:.1f} kd={mc[0].kd:.2f}")
+            print(f"  motor[10]: q={mc[10].q:.3f} kp={mc[10].kp:.1f} kd={mc[10].kd:.2f}")
 
         # Send command
         self.lowcmd_publisher_.Write(self.low_cmd)

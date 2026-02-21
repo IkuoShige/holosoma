@@ -82,7 +82,13 @@ class BoosterRemoteControlService:
             raise RuntimeError("No suitable joystick found")
 
         self.joystick = joystick
-        print(f"Selected joystick: {joystick.name}")
+        self._is_ps_controller = any(
+            keyword in joystick.name.lower() for keyword in ["sony", "playstation", "dualsense", "dualshock", "wireless controller"]
+        )
+        if self._is_ps_controller:
+            print(f"Selected joystick (PS layout): {joystick.name}")
+        else:
+            print(f"Selected joystick: {joystick.name}")
 
     def _start_joystick_thread(self):
         """Start joystick polling thread."""
@@ -211,36 +217,53 @@ class BoosterRemoteControlService:
             # BTN_START -> start (4), BTN_SELECT -> select (8)
             # BTN_TR -> R1 (1), BTN_TL -> L1 (2), BTN_TR2 -> R2 (16), BTN_TL2 -> L2 (32)
 
-            if button_states.get(evdev.ecodes.BTN_A, False):
-                keys_value |= 256  # A
-                print("A pressed")
-            if button_states.get(evdev.ecodes.BTN_B, False):
-                keys_value |= 512  # B
-                print("B pressed")
-            if button_states.get(evdev.ecodes.BTN_X, False):
-                keys_value |= 1024  # X
-                print("X pressed")
-            if button_states.get(evdev.ecodes.BTN_Y, False):
-                keys_value |= 2048  # Y
-                print("Y pressed")
-            if button_states.get(evdev.ecodes.BTN_START, False):
-                keys_value |= 4  # start
-                print("Start pressed")
-            if button_states.get(evdev.ecodes.BTN_SELECT, False):
-                keys_value |= 8  # select
-                print("Select pressed")
+            if getattr(self, "_is_ps_controller", False):
+                # PS controller: ×=305(confirm/A), ○=306(cancel/B), △=307(Y), □=304(X)
+                #                OPTIONS=313(Start), Share=312(Select)
+                if button_states.get(305, False):  # × (Cross) = A
+                    keys_value |= 256
+                    print("A pressed (×)")
+                if button_states.get(306, False):  # ○ (Circle) = B
+                    keys_value |= 512
+                    print("B pressed (○)")
+                if button_states.get(307, False):  # △ (Triangle) = Y
+                    keys_value |= 2048
+                    print("Y pressed (△)")
+                if button_states.get(304, False):  # □ (Square) = X
+                    keys_value |= 1024
+                    print("X pressed (□)")
+                if button_states.get(313, False):  # OPTIONS = Start
+                    keys_value |= 4
+                    print("Start pressed (OPTIONS)")
+                if button_states.get(312, False):  # Share = Select
+                    keys_value |= 8
+                    print("Select pressed (Share)")
+            else:
+                # Xbox/Logitech: BTN_A=304(A), BTN_B=305(B), BTN_X=307(X), BTN_Y=308(Y)
+                if button_states.get(evdev.ecodes.BTN_A, False):
+                    keys_value |= 256  # A
+                    print("A pressed")
+                if button_states.get(evdev.ecodes.BTN_B, False):
+                    keys_value |= 512  # B
+                    print("B pressed")
+                if button_states.get(evdev.ecodes.BTN_X, False):
+                    keys_value |= 1024  # X
+                    print("X pressed")
+                if button_states.get(evdev.ecodes.BTN_Y, False):
+                    keys_value |= 2048  # Y
+                    print("Y pressed")
+                if button_states.get(evdev.ecodes.BTN_START, False):
+                    keys_value |= 4  # start
+                    print("Start pressed")
+                if button_states.get(evdev.ecodes.BTN_SELECT, False):
+                    keys_value |= 8  # select
+                    print("Select pressed")
             if button_states.get(evdev.ecodes.BTN_TR, False):
                 keys_value |= 1  # R1
                 print("R1 pressed")
             if button_states.get(evdev.ecodes.BTN_TL, False):
                 keys_value |= 2  # L1
                 print("L1 pressed")
-            if button_states.get(evdev.ecodes.BTN_TR2, False):
-                keys_value |= 16  # R2
-                print("R2 pressed")
-            if button_states.get(evdev.ecodes.BTN_TL2, False):
-                keys_value |= 32  # L2
-                print("L2 pressed")
 
             # Add D-pad support
             if button_states.get(evdev.ecodes.BTN_DPAD_UP, False):

@@ -42,10 +42,25 @@ class InterfaceWrapper:
     def _init_sdk_components(self):
         """Initialize the appropriate backend based on SDK type."""
         if self.sdk_type == "booster":
+            import time
+
             # Use sdk2py Python interface for booster
+            # NOTE: state_processor must be created BEFORE command_sender, and
+            # DDS discovery must complete (at least one state message received)
+            # before B1LocoClient.Init() + ChangeMode(kCustom) will work.
             self.backend = "sdk2py"
-            self.command_sender = create_command_sender(self.robot_config)
             self.state_processor = create_state_processor(self.robot_config)
+
+            # Wait for DDS discovery to complete
+            for i in range(100):  # up to 10 seconds
+                if self.state_processor.get_robot_state_data() is not None:
+                    logger.info(f"DDS discovery complete ({i * 0.1:.1f}s)")
+                    break
+                time.sleep(0.1)
+            else:
+                logger.warning("No state received after 10s - proceeding anyway")
+
+            self.command_sender = create_command_sender(self.robot_config)
         elif self.sdk_type == "unitree":
             try:
                 import unitree_interface

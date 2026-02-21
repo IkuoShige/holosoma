@@ -61,4 +61,9 @@ class BoosterStateProcessor(BasicStateProcessor):
 
     def low_state_handler_b1(self, msg):
         """Handle Booster B1 low-level state messages."""
+        if not hasattr(self, "_cb_count"):
+            self._cb_count = 0
+        self._cb_count += 1
+        if self._cb_count <= 3:
+            print(f"[STATE CB] received state message #{self._cb_count}")
         self.robot_state_data = self.prepare_low_state(msg)

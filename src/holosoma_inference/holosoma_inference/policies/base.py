@@ -560,6 +560,14 @@ class BasePolicy:
         with self.latency_tracker.measure("read_state"):
             robot_state_data = self.interface.get_low_state()
 
+        if robot_state_data is None:
+            if not hasattr(self, "_none_count"):
+                self._none_count = 0
+            self._none_count += 1
+            if self._none_count % 250 == 1:
+                self.logger.warning(f"robot_state_data is None (count={self._none_count})")
+            return
+
         # Stage 2: Pre-processing
         with self.latency_tracker.measure("preprocessing"):
             # Determine target joint positions
