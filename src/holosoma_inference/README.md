@@ -35,6 +35,7 @@ Select the appropriate workflow guide based on your setup:
 
 #### Real Robot Deployment
 - **[Real Robot Locomotion](docs/workflows/real-robot-locomotion.md)** - Run locomotion policies on physical Unitree G1 or Booster T1 robots
+- **[Real Robot K1 Locomotion](docs/workflows/real-robot-k1-locomotion.md)** - K1 deployment runbook including joystick troubleshooting on Jetson
 - **[Real Robot Whole Body Tracking](docs/workflows/real-robot-wbt.md)** - Run WBT policies on physical Unitree G1 robots
 
 #### Simulation (MuJoCo)
