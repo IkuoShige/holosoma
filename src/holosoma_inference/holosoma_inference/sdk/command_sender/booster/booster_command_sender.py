@@ -29,9 +29,8 @@ class BoosterCommandSender(BasicCommandSender):
             self.lowcmd_publisher_.InitChannel()
             self.client.Init()
             self.init_booster_low_cmd()
-            # NOTE: Do NOT send prepare command (kp=0) before ChangeMode.
-            # If the robot is already in custom mode (e.g. re-running the script),
-            # a kp=0 command would remove all motor stiffness and collapse the robot.
+            self.create_prepare_cmd(self.low_cmd, self.config)
+            self._send_cmd(self.low_cmd)
             self.client.ChangeMode(RobotMode.kCustom)
             self.dof_names = self.config.dof_names
             self.dof_names_parallel_mech = self.config.dof_names_parallel_mech
@@ -107,11 +106,21 @@ class BoosterCommandSender(BasicCommandSender):
     def create_prepare_cmd(self, low_cmd, cfg: RobotConfig):
         """Create prepare command for T1."""
         self.init_cmd_t1(low_cmd)
-        # Use motor_kp, motor_kd, and default_motor_angles from RobotConfig
-        # Note: motor_kp and motor_kd may be None during initialization (loaded from ONNX later)
+        if cfg.motor_kp is None or cfg.motor_kd is None:
+            raise ValueError(
+                "motor_kp/motor_kd are required before sending Booster prepare command. "
+                "Resolve gains from config or ONNX metadata before initializing communication."
+            )
+        if len(cfg.motor_kp) != cfg.num_motors or len(cfg.motor_kd) != cfg.num_motors:
+            raise ValueError(
+                "motor_kp/motor_kd length mismatch in prepare command: "
+                f"num_motors={cfg.num_motors}, kp={len(cfg.motor_kp)}, kd={len(cfg.motor_kd)}"
+            )
+
+        # Use motor_kp, motor_kd, and default_motor_angles from RobotConfig.
         num_motors = min(len(low_cmd.motor_cmd), cfg.num_motors)
         for i in range(num_motors):
-            low_cmd.motor_cmd[i].kp = cfg.motor_kp[i] if cfg.motor_kp is not None else 0.0
-            low_cmd.motor_cmd[i].kd = cfg.motor_kd[i] if cfg.motor_kd is not None else 0.0
+            low_cmd.motor_cmd[i].kp = cfg.motor_kp[i]
+            low_cmd.motor_cmd[i].kd = cfg.motor_kd[i]
             low_cmd.motor_cmd[i].q = cfg.default_motor_angles[i]
         return low_cmd

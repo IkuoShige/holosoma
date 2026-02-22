@@ -212,9 +212,11 @@ class InterfaceWrapper:
             # Booster robots use evdev-based joystick input
             try:
                 self.booster_remote_control = BoosterRemoteControlService()
+                if getattr(self.booster_remote_control, "joystick", None) is None:
+                    raise RuntimeError("No suitable joystick device found")
                 self.booster_joystick_msg = BoosterJoystickMessage(self.booster_remote_control)
                 print(colored("Booster Remote Control Service Initialized", "green"))
-            except ImportError as e:
+            except Exception as e:
                 print(colored(f"Warning: Failed to initialize booster remote control: {e}", "yellow"))
                 self.booster_remote_control = None
                 self.booster_joystick_msg = None

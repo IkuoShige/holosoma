@@ -8,6 +8,12 @@ class LocomotionPolicy(BasePolicy):
     def __init__(self, config):
         super().__init__(config)
         self.is_standing = False
+        # Keep posture support active immediately after startup.
+        # BasePolicy defaults to "track current pose" when policy is inactive,
+        # which can follow a collapsing posture on real hardware.
+        self.get_ready_state = True
+        self.init_count = 0
+        self.logger.info(colored("Startup mode: holding default pose (init state)", "blue"))
 
     def get_current_obs_buffer_dict(self, robot_state_data):
         current_obs_buffer_dict = super().get_current_obs_buffer_dict(robot_state_data)

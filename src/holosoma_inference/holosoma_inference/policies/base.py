@@ -42,12 +42,12 @@ class BasePolicy:
         self._init_sdk_components()
         # Initialize observation config
         self._init_obs_config()
-        # Initialize communication components
-        self._init_communication_components()
         # Initialize policy components
         self._init_policy_components(
             self.config.task.model_path, self.config.task.policy_action_scale, self.config.task.rl_rate
         )
+        # Initialize communication components
+        self._init_communication_components()
         # Initialize command components
         self._init_command_components()
         # Initialize input handlers
@@ -328,6 +328,12 @@ class BasePolicy:
             self.use_joystick = False
             self._init_keyboard_handler()
         else:
+            if self.interface.get_joystick_msg() is None:
+                self.logger.warning("Joystick mode requested, but no joystick device is available.")
+                self.logger.warning("Falling back to keyboard input.")
+                self.use_joystick = False
+                self._init_keyboard_handler()
+                return
             self.logger.info("Using joystick")
             self.use_joystick = True
 
@@ -408,12 +414,14 @@ class BasePolicy:
             self.robot_config = replace(
                 self.robot_config, motor_kp=tuple(kp_values.tolist()), motor_kd=tuple(kd_values.tolist())
             )
-            # Update InterfaceWrapper's robot_config reference since replace() creates a new object
-            self.interface.robot_config = self.robot_config
-            # Update sdk2py backend components (booster SDK only)
-            if self.interface.backend == "sdk2py":
-                self.interface.command_sender.config = self.robot_config
-                self.interface.state_processor.config = self.robot_config
+            # Interface may not exist yet during startup initialization.
+            if hasattr(self, "interface"):
+                # Update InterfaceWrapper's robot_config reference since replace() creates a new object
+                self.interface.robot_config = self.robot_config
+                # Update sdk2py backend components (booster SDK only)
+                if self.interface.backend == "sdk2py":
+                    self.interface.command_sender.config = self.robot_config
+                    self.interface.state_processor.config = self.robot_config
         else:
             # No values available - error
             raise ValueError(

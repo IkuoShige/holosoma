@@ -55,27 +55,22 @@ class BoosterRemoteControlService:
         """Initialize and validate joystick connection using evdev."""
         devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
         joystick = None
+        selected_absinfo = None
 
         for device in devices:
             caps = device.capabilities()
             # Check for both absolute axes and keys
             if evdev.ecodes.EV_ABS in caps and evdev.ecodes.EV_KEY in caps:
                 abs_info = caps.get(evdev.ecodes.EV_ABS, [])
-                # Look for typical gamepad axes
-                axes = [code for (code, info) in abs_info]
-                if all(
-                    code in axes
-                    for code in [self.config.left_x_axis, self.config.left_y_axis, self.config.right_x_axis]
-                ):
-                    absinfo = {code: info for code, info in abs_info}
-                    self.axis_ranges = {
-                        self.config.left_x_axis: absinfo[self.config.left_x_axis],
-                        self.config.left_y_axis: absinfo[self.config.left_y_axis],
-                        self.config.right_x_axis: absinfo[self.config.right_x_axis],
-                        self.config.right_y_axis: absinfo[self.config.right_y_axis],
-                    }
+                absinfo = {code: info for code, info in abs_info}
+                axes = set(absinfo.keys())
+                has_left = self.config.left_x_axis in axes and self.config.left_y_axis in axes
+                # Some PS controllers report right stick yaw on ABS_Z instead of ABS_RX.
+                has_right = self.config.right_x_axis in axes or evdev.ecodes.ABS_Z in axes
+                if has_left and has_right:
                     print(f"Found suitable joystick: {device.name}")
                     joystick = device
+                    selected_absinfo = absinfo
                     break
 
         if not joystick:
@@ -85,8 +80,34 @@ class BoosterRemoteControlService:
         self._is_ps_controller = any(
             keyword in joystick.name.lower() for keyword in ["sony", "playstation", "dualsense", "dualshock", "wireless controller"]
         )
+        if self._is_ps_controller and selected_absinfo is not None:
+            # Empirically, this controller maps right stick to ABS_Z/ABS_RZ on this platform.
+            if evdev.ecodes.ABS_Z in selected_absinfo:
+                self.config.right_x_axis = evdev.ecodes.ABS_Z
+            if evdev.ecodes.ABS_RZ in selected_absinfo:
+                self.config.right_y_axis = evdev.ecodes.ABS_RZ
+
+        if selected_absinfo is None:
+            selected_absinfo = {}
+        required = [self.config.left_x_axis, self.config.left_y_axis, self.config.right_x_axis]
+        missing = [code for code in required if code not in selected_absinfo]
+        if missing:
+            raise RuntimeError(f"Missing required axis codes: {missing}")
+        self.axis_ranges = {
+            self.config.left_x_axis: selected_absinfo[self.config.left_x_axis],
+            self.config.left_y_axis: selected_absinfo[self.config.left_y_axis],
+            self.config.right_x_axis: selected_absinfo[self.config.right_x_axis],
+        }
+        if self.config.right_y_axis in selected_absinfo:
+            self.axis_ranges[self.config.right_y_axis] = selected_absinfo[self.config.right_y_axis]
+
         if self._is_ps_controller:
             print(f"Selected joystick (PS layout): {joystick.name}")
+            print(
+                "Axis map: "
+                f"LX={self.config.left_x_axis}, LY={self.config.left_y_axis}, "
+                f"RX={self.config.right_x_axis}, RY={self.config.right_y_axis}"
+            )
         else:
             print(f"Selected joystick: {joystick.name}")
 
@@ -212,45 +233,41 @@ class BoosterRemoteControlService:
         if hasattr(self, "_button_states"):
             button_states = self._button_states
 
-            # Map common buttons to unitree equivalents
-            # BTN_A -> A (256), BTN_B -> B (512), BTN_X -> X (1024), BTN_Y -> Y (2048)
-            # BTN_START -> start (4), BTN_SELECT -> select (8)
-            # BTN_TR -> R1 (1), BTN_TL -> L1 (2), BTN_TR2 -> R2 (16), BTN_TL2 -> L2 (32)
-
             if getattr(self, "_is_ps_controller", False):
-                # PS controller: ×=305(confirm/A), ○=306(cancel/B), △=307(Y), □=304(X)
-                #                OPTIONS=313(Start), Share=312(Select)
-                if button_states.get(305, False):  # × (Cross) = A
-                    keys_value |= 256
-                    print("A pressed (×)")
-                if button_states.get(306, False):  # ○ (Circle) = B
-                    keys_value |= 512
-                    print("B pressed (○)")
-                if button_states.get(307, False):  # △ (Triangle) = Y
-                    keys_value |= 2048
-                    print("Y pressed (△)")
-                if button_states.get(304, False):  # □ (Square) = X
-                    keys_value |= 1024
-                    print("X pressed (□)")
-                if button_states.get(313, False):  # OPTIONS = Start
-                    keys_value |= 4
-                    print("Start pressed (OPTIONS)")
-                if button_states.get(312, False):  # Share = Select
-                    keys_value |= 8
-                    print("Select pressed (Share)")
-            else:
-                # Xbox/Logitech: BTN_A=304(A), BTN_B=305(B), BTN_X=307(X), BTN_Y=308(Y)
-                if button_states.get(evdev.ecodes.BTN_A, False):
+                # Empirically observed mapping for this PS controller on Jetson:
+                # A=BTN_EAST(305), B=BTN_C(306), X=BTN_SOUTH(304), Y=BTN_NORTH(307),
+                # Start=BTN_TR2(313), Select=BTN_TL2(312).
+                if button_states.get(evdev.ecodes.BTN_EAST, False):
                     keys_value |= 256  # A
-                    print("A pressed")
-                if button_states.get(evdev.ecodes.BTN_B, False):
+                    print("A pressed (PS)")
+                if button_states.get(evdev.ecodes.BTN_C, False):
                     keys_value |= 512  # B
-                    print("B pressed")
-                if button_states.get(evdev.ecodes.BTN_X, False):
+                    print("B pressed (PS)")
+                if button_states.get(evdev.ecodes.BTN_SOUTH, False):
                     keys_value |= 1024  # X
-                    print("X pressed")
-                if button_states.get(evdev.ecodes.BTN_Y, False):
+                    print("X pressed (PS)")
+                if button_states.get(evdev.ecodes.BTN_NORTH, False):
                     keys_value |= 2048  # Y
+                    print("Y pressed (PS)")
+                if button_states.get(evdev.ecodes.BTN_TR2, False):
+                    keys_value |= 4  # start
+                    print("Start pressed (PS)")
+                if button_states.get(evdev.ecodes.BTN_TL2, False):
+                    keys_value |= 8  # select
+                    print("Select pressed (PS)")
+            else:
+                # Generic Linux gamepad semantic mapping.
+                if button_states.get(evdev.ecodes.BTN_SOUTH, False):
+                    keys_value |= 256  # A / Cross
+                    print("A pressed")
+                if button_states.get(evdev.ecodes.BTN_EAST, False):
+                    keys_value |= 512  # B / Circle
+                    print("B pressed")
+                if button_states.get(evdev.ecodes.BTN_WEST, False):
+                    keys_value |= 1024  # X / Square
+                    print("X pressed")
+                if button_states.get(evdev.ecodes.BTN_NORTH, False):
+                    keys_value |= 2048  # Y / Triangle
                     print("Y pressed")
                 if button_states.get(evdev.ecodes.BTN_START, False):
                     keys_value |= 4  # start
@@ -264,6 +281,12 @@ class BoosterRemoteControlService:
             if button_states.get(evdev.ecodes.BTN_TL, False):
                 keys_value |= 2  # L1
                 print("L1 pressed")
+            if not getattr(self, "_is_ps_controller", False) and button_states.get(evdev.ecodes.BTN_TR2, False):
+                keys_value |= 16  # R2
+                print("R2 pressed")
+            if not getattr(self, "_is_ps_controller", False) and button_states.get(evdev.ecodes.BTN_TL2, False):
+                keys_value |= 32  # L2
+                print("L2 pressed")
 
             # Add D-pad support
             if button_states.get(evdev.ecodes.BTN_DPAD_UP, False):
