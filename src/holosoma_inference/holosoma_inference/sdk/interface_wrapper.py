@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from loguru import logger
 from termcolor import colored
@@ -36,14 +38,21 @@ class InterfaceWrapper:
         self._kp_level = 1.0
         self._kd_level = 1.0
 
+        # Joystick command shaping state.
+        self._joystick_lpf_alpha = 0.35
+        self._joystick_slew_rate_lin_x = 2.0
+        self._joystick_slew_rate_lin_y = 1.5
+        self._joystick_slew_rate_yaw = 2.5
+        self._joystick_filtered_lin_cmd = np.zeros((1, 2), dtype=np.float64)
+        self._joystick_filtered_ang_cmd = np.zeros((1, 1), dtype=np.float64)
+        self._joystick_last_update_time = time.monotonic()
+
         # Initialize sdk components
         self._init_sdk_components()
 
     def _init_sdk_components(self):
         """Initialize the appropriate backend based on SDK type."""
         if self.sdk_type == "booster":
-            import time
-
             # Use sdk2py Python interface for booster
             # NOTE: state_processor must be created BEFORE command_sender, and
             # DDS discovery must complete (at least one state message received)
@@ -308,6 +317,81 @@ class InterfaceWrapper:
             return None
         return self._wc_key_map.get(getattr(wc_msg, "keys", 0), None)
 
+    def _get_joystick_command_limits(self):
+        """Get per-axis joystick command limits used for diagonal clipping."""
+        if self.sdk_type == "booster" and getattr(self, "booster_remote_control", None) is not None:
+            cfg = self.booster_remote_control.config
+            return float(cfg.max_vx), float(cfg.max_vy), float(cfg.max_vyaw)
+        # Unitree wireless controller is normalized around [-1, 1].
+        return 1.0, 1.0, 1.0
+
+    def _shape_joystick_commands(self, target_lin_x, target_lin_y, target_yaw, stand_command):
+        """Apply diagonal clipping, low-pass filtering, and slew limiting."""
+        max_vx, max_vy, max_vyaw = self._get_joystick_command_limits()
+
+        # Restrict diagonal command corners to the same envelope as training axes.
+        if max_vx > 0.0 and max_vy > 0.0:
+            ellipse_norm = np.sqrt((target_lin_x / max_vx) ** 2 + (target_lin_y / max_vy) ** 2)
+            if ellipse_norm > 1.0:
+                target_lin_x /= ellipse_norm
+                target_lin_y /= ellipse_norm
+
+        target_yaw = float(np.clip(target_yaw, -max_vyaw, max_vyaw))
+
+        # Force command target to zero while standing, then ramp when walking starts.
+        if float(stand_command[0, 0]) == 0.0:
+            target_lin_x = 0.0
+            target_lin_y = 0.0
+            target_yaw = 0.0
+
+        raw_lin = np.array([[target_lin_x, target_lin_y]], dtype=np.float64)
+        raw_ang = np.array([[target_yaw]], dtype=np.float64)
+
+        # LPF suppresses frame-to-frame joystick spikes.
+        lpf_lin = self._joystick_lpf_alpha * raw_lin + (1.0 - self._joystick_lpf_alpha) * self._joystick_filtered_lin_cmd
+        lpf_ang = self._joystick_lpf_alpha * raw_ang + (1.0 - self._joystick_lpf_alpha) * self._joystick_filtered_ang_cmd
+
+        now = time.monotonic()
+        dt = min(max(now - self._joystick_last_update_time, 1e-3), 0.1)
+        self._joystick_last_update_time = now
+
+        # Slew rate limit avoids sharp command jumps (notably at diagonal stick corners).
+        max_delta_lin = np.array(
+            [[self._joystick_slew_rate_lin_x * dt, self._joystick_slew_rate_lin_y * dt]],
+            dtype=np.float64,
+        )
+        max_delta_ang = np.array([[self._joystick_slew_rate_yaw * dt]], dtype=np.float64)
+
+        delta_lin = np.clip(lpf_lin - self._joystick_filtered_lin_cmd, -max_delta_lin, max_delta_lin)
+        delta_ang = np.clip(lpf_ang - self._joystick_filtered_ang_cmd, -max_delta_ang, max_delta_ang)
+
+        self._joystick_filtered_lin_cmd = self._joystick_filtered_lin_cmd + delta_lin
+        self._joystick_filtered_ang_cmd = self._joystick_filtered_ang_cmd + delta_ang
+
+        return (
+            float(self._joystick_filtered_lin_cmd[0, 0]),
+            float(self._joystick_filtered_lin_cmd[0, 1]),
+            float(self._joystick_filtered_ang_cmd[0, 0]),
+        )
+
+    def get_joystick_health(self):
+        """Return joystick runtime health information for diagnostics."""
+        info = {
+            "available": self.get_joystick_msg() is not None,
+            "thread_alive": True,
+            "event_error_count": 0,
+            "last_error": None,
+        }
+        if self.sdk_type == "booster":
+            service = getattr(self, "booster_remote_control", None)
+            if service is None:
+                info["thread_alive"] = False
+                return info
+            info["thread_alive"] = bool(service.is_thread_alive())
+            info["event_error_count"] = int(getattr(service, "event_error_count", 0))
+            info["last_error"] = getattr(service, "last_error", None)
+        return info
+
     def process_joystick_input(self, lin_vel_command, ang_vel_command, stand_command, upper_body_motion_active):
         """
         Process joystick input and update commands in a unified way.
@@ -322,18 +406,30 @@ class InterfaceWrapper:
         wc_msg = self.get_joystick_msg()
         if wc_msg is None:
             return lin_vel_command, ang_vel_command, self._key_states
-        # Process stick input
-        if getattr(wc_msg, "keys", 0) == 0 and not upper_body_motion_active:
-            lx = getattr(wc_msg, "lx", 0.0)
-            ly = getattr(wc_msg, "ly", 0.0)
-            rx = getattr(wc_msg, "rx", 0.0)
-            lin_vel_command[0, 1] = -(lx if abs(lx) > 0.1 else 0.0) * stand_command[0, 0]
-            lin_vel_command[0, 0] = (ly if abs(ly) > 0.1 else 0.0) * stand_command[0, 0]
-            ang_vel_command[0, 0] = -(rx if abs(rx) > 0.1 else 0.0) * stand_command[0, 0]
+
+        # Process stick input continuously (do not block on button bitmask).
+        if not upper_body_motion_active:
+            lx = float(getattr(wc_msg, "lx", 0.0))
+            ly = float(getattr(wc_msg, "ly", 0.0))
+            rx = float(getattr(wc_msg, "rx", 0.0))
+
+            target_lin_x = ly if abs(ly) > 0.1 else 0.0
+            target_lin_y = -(lx if abs(lx) > 0.1 else 0.0)
+            target_yaw = -(rx if abs(rx) > 0.1 else 0.0)
+
+            shaped_lin_x, shaped_lin_y, shaped_yaw = self._shape_joystick_commands(
+                target_lin_x, target_lin_y, target_yaw, stand_command
+            )
+
+            lin_vel_command[0, 0] = shaped_lin_x
+            lin_vel_command[0, 1] = shaped_lin_y
+            ang_vel_command[0, 0] = shaped_yaw
+
         # Process button input
         cur_key = self.get_joystick_key(wc_msg)
         self._last_key_states = self._key_states.copy()
         if cur_key:
+            self._key_states = dict.fromkeys(self._wc_key_map.values(), False)
             self._key_states[cur_key] = True
         else:
             self._key_states = dict.fromkeys(self._wc_key_map.values(), False)

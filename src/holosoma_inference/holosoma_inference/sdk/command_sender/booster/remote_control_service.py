@@ -34,6 +34,9 @@ class BoosterRemoteControlService:
         self.config = config or JoystickConfig()
         self._lock = threading.Lock()
         self._running = True
+        self._last_event_time = time.monotonic()
+        self._event_error_count = 0
+        self._last_error: str | None = None
 
         self.vx = 0.0
         self.vy = 0.0
@@ -133,17 +136,25 @@ class BoosterRemoteControlService:
                 elif event.type == evdev.ecodes.EV_KEY:
                     # Handle button events
                     self._handle_button(event.code, event.value)
+                self._event_error_count = 0
             return True
         except BlockingIOError:
             # No events available
             time.sleep(0.01)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            self._event_error_count += 1
+            self._last_error = repr(exc)
+            # Keep polling even if an event read fails once.
+            if self._event_error_count <= 3 or self._event_error_count % 50 == 0:
+                print(f"[Joystick] event loop error count={self._event_error_count}: {exc!r}")
+            time.sleep(0.05)
+            return self._running
 
     def _handle_axis(self, code: int, value: int):
         """Handle axis events."""
         try:
+            self._last_event_time = time.monotonic()
             # Left stick - movement
             if code == self.config.left_y_axis:  # Left stick Y (forward/back)
                 self.vx = self._scale(value, self.config.max_vx, self.config.control_threshold, code)
@@ -174,6 +185,7 @@ class BoosterRemoteControlService:
 
     def _handle_button(self, code: int, value: int):
         """Handle button events."""
+        self._last_event_time = time.monotonic()
         # Track individual button states
         if not hasattr(self, "_button_states"):
             self._button_states = {}
@@ -341,6 +353,17 @@ class BoosterRemoteControlService:
         if abs(mapped_value) < threshold:
             return 0.0
         return -mapped_value
+
+    @property
+    def event_error_count(self) -> int:
+        return self._event_error_count
+
+    @property
+    def last_error(self) -> str | None:
+        return self._last_error
+
+    def is_thread_alive(self) -> bool:
+        return bool(getattr(self, "joystick_runner", None) is not None and self.joystick_runner.is_alive())
 
     def close(self):
         """Clean up resources."""

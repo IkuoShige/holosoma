@@ -336,6 +336,8 @@ class BasePolicy:
                 return
             self.logger.info("Using joystick")
             self.use_joystick = True
+            self._last_joystick_error_count = 0
+            self._last_joystick_thread_alive = True
 
     def _init_keyboard_handler(self):
         """Initialize keyboard handler."""
@@ -682,6 +684,28 @@ class BasePolicy:
                 self.handle_joystick_button(key)
                 self._print_control_status()
 
+    def _monitor_joystick_health(self):
+        """Log joystick health changes for runtime diagnostics."""
+        health = self.interface.get_joystick_health()
+        if not health.get("available", False):
+            self.logger.warning("Joystick health: message source unavailable.")
+            return
+
+        thread_alive = bool(health.get("thread_alive", True))
+        if thread_alive != getattr(self, "_last_joystick_thread_alive", True):
+            if thread_alive:
+                self.logger.info("Joystick health: input thread recovered.")
+            else:
+                self.logger.warning("Joystick health: input thread stopped.")
+            self._last_joystick_thread_alive = thread_alive
+
+        error_count = int(health.get("event_error_count", 0))
+        if error_count > 0 and error_count != getattr(self, "_last_joystick_error_count", 0):
+            self.logger.warning(
+                f"Joystick health: event loop errors={error_count}, last_error={health.get('last_error')}"
+            )
+        self._last_joystick_error_count = error_count
+
     # ============================================================================
     # Button Handler Methods
     # ============================================================================
@@ -800,6 +824,8 @@ class BasePolicy:
 
                 if self.use_joystick and self.interface.get_joystick_msg() is not None:
                     self.process_joystick_input()
+                    if it % 100 == 0:
+                        self._monitor_joystick_health()
                 if self.use_phase:
                     self.update_phase_time()
 
