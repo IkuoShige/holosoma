@@ -233,7 +233,10 @@ class IsaacSimVideoRecorder(VideoRecorderInterface):
             try:
                 # Detach annotator from render product
                 if self._render_product is not None:
-                    self._rgb_annotator.detach([self._render_product])
+                    detach_target = (
+                        self._render_product.path if hasattr(self._render_product, "path") else self._render_product
+                    )
+                    self._rgb_annotator.detach([detach_target])
                 self._rgb_annotator = None
             except Exception as e:
                 logger.warning(f"Error cleaning up RGB annotator: {e}")
