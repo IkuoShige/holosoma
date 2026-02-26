@@ -20,6 +20,16 @@ class LocomotionCommand(CommandTermBase):
             raise ValueError("LocomotionCommand requires 'command_ranges' in params.")
         self.command_ranges: dict[str, Sequence[float]] = {key: tuple(value) for key, value in ranges.items()}
         self.stand_prob: float = float(params.get("stand_prob", 0.0))
+        self.combined_motion_prob: float = float(params.get("combined_motion_prob", 0.0))
+        self.combined_lin_vel_x_range: tuple[float, float] | None = self._normalize_optional_range(
+            params.get("combined_lin_vel_x_range")
+        )
+        self.combined_lin_vel_y_range: tuple[float, float] | None = self._normalize_optional_range(
+            params.get("combined_lin_vel_y_range")
+        )
+        self.combined_ang_vel_yaw_abs_range: tuple[float, float] | None = self._normalize_optional_range(
+            params.get("combined_ang_vel_yaw_abs_range")
+        )
         self.command_dim: int = params.get("command_dim", 3)
         self.commands: torch.Tensor | None = None
 
@@ -98,6 +108,7 @@ class LocomotionCommand(CommandTermBase):
             (env_ids.shape[0], 1),
             device=device,
         ).squeeze(1)
+        self._inject_combined_motion_samples(commands, env_ids)
 
         manager = getattr(self, "manager", None)
         if manager is not None:
@@ -106,12 +117,88 @@ class LocomotionCommand(CommandTermBase):
             gait_state = None
 
         if gait_state is not None:
-            cast("LocomotionGait", gait_state).resample_frequency(env_ids)
+            cast("LocomotionGait", gait_state).resample_frequency(env_ids, commands=commands)
 
         if self.stand_prob > 0.0:
             stand_mask = torch.rand(env_ids.shape[0], device=device) <= self.stand_prob
             if stand_mask.any():
                 commands[env_ids[stand_mask], :3] = 0.0
+
+    def _inject_combined_motion_samples(self, commands: torch.Tensor, env_ids: torch.Tensor) -> None:
+        """Bias a subset of commands toward high-speed forward turning maneuvers."""
+        if self.combined_motion_prob <= 0.0 or env_ids.numel() == 0:
+            return
+        if self.combined_lin_vel_x_range is None or self.combined_ang_vel_yaw_abs_range is None:
+            return
+
+        ranges = self.command_ranges
+        lin_x_range = self._intersect_ranges(self.combined_lin_vel_x_range, tuple(ranges["lin_vel_x"]))
+        if lin_x_range is None:
+            return
+
+        yaw_range = self._normalize_range(tuple(ranges["ang_vel_yaw"]))
+        yaw_abs_cfg = self._normalize_range(self.combined_ang_vel_yaw_abs_range)
+        yaw_abs_low = max(0.0, yaw_abs_cfg[0])
+        yaw_abs_high = min(yaw_abs_cfg[1], max(abs(yaw_range[0]), abs(yaw_range[1])))
+        if yaw_abs_high <= yaw_abs_low:
+            return
+
+        device = self.env.device
+        combined_mask = torch.rand(env_ids.shape[0], device=device) <= self.combined_motion_prob
+        if not combined_mask.any():
+            return
+        combined_env_ids = env_ids[combined_mask]
+        num = combined_env_ids.shape[0]
+
+        commands[combined_env_ids, 0] = torch_rand_float(
+            lin_x_range[0],
+            lin_x_range[1],
+            (num, 1),
+            device=device,
+        ).squeeze(1)
+
+        if self.combined_lin_vel_y_range is not None:
+            lin_y_range = self._intersect_ranges(self.combined_lin_vel_y_range, tuple(ranges["lin_vel_y"]))
+            if lin_y_range is not None:
+                commands[combined_env_ids, 1] = torch_rand_float(
+                    lin_y_range[0],
+                    lin_y_range[1],
+                    (num, 1),
+                    device=device,
+                ).squeeze(1)
+
+        yaw_abs = torch_rand_float(
+            yaw_abs_low,
+            yaw_abs_high,
+            (num, 1),
+            device=device,
+        ).squeeze(1)
+        yaw_sign = torch.where(torch.rand(num, device=device) < 0.5, -1.0, 1.0)
+        commands[combined_env_ids, 2] = torch.clamp(yaw_abs * yaw_sign, min=yaw_range[0], max=yaw_range[1])
+
+    @staticmethod
+    def _normalize_range(range_like: Sequence[float]) -> tuple[float, float]:
+        if len(range_like) != 2:
+            raise ValueError(f"Range must have 2 values, got: {range_like}")
+        lo = float(range_like[0])
+        hi = float(range_like[1])
+        return (lo, hi) if lo <= hi else (hi, lo)
+
+    @classmethod
+    def _normalize_optional_range(cls, range_like: Any) -> tuple[float, float] | None:
+        if range_like is None:
+            return None
+        if not isinstance(range_like, (list, tuple)):
+            raise TypeError(f"Expected range to be list/tuple or None, got: {type(range_like)}")
+        return cls._normalize_range(range_like)
+
+    @staticmethod
+    def _intersect_ranges(
+        primary: tuple[float, float], secondary: tuple[float, float]
+    ) -> tuple[float, float] | None:
+        lo = max(primary[0], secondary[0])
+        hi = min(primary[1], secondary[1])
+        return None if hi <= lo else (lo, hi)
 
     def _ensure_index_tensor(self, env_ids: torch.Tensor | Sequence[int] | None) -> torch.Tensor:
         if env_ids is None:
@@ -131,6 +218,21 @@ class LocomotionGait(CommandTermBase):
         self.gait_period_randomization_width: float = float(params.get("gait_period_randomization_width", 0.0))
         self.randomize_phase: bool = bool(params.get("randomize_phase", True))
         self.stand_phase_value: float = float(params.get("stand_phase_value", torch.pi))
+        self.adaptive_gait_freq_from_lin_speed: float = float(params.get("adaptive_gait_freq_from_lin_speed", 0.0))
+        self.adaptive_gait_freq_from_yaw_speed: float = float(params.get("adaptive_gait_freq_from_yaw_speed", 0.0))
+        adaptive_min = params.get("adaptive_gait_freq_min")
+        adaptive_max = params.get("adaptive_gait_freq_max")
+        self.adaptive_gait_freq_min: float | None = float(adaptive_min) if adaptive_min is not None else None
+        self.adaptive_gait_freq_max: float | None = float(adaptive_max) if adaptive_max is not None else None
+        if (
+            self.adaptive_gait_freq_min is not None
+            and self.adaptive_gait_freq_max is not None
+            and self.adaptive_gait_freq_min > self.adaptive_gait_freq_max
+        ):
+            raise ValueError(
+                f"adaptive_gait_freq_min ({self.adaptive_gait_freq_min}) must be <= "
+                f"adaptive_gait_freq_max ({self.adaptive_gait_freq_max})."
+            )
 
         self.phase_offset: torch.Tensor | None = None
         self.phase: torch.Tensor | None = None
@@ -177,7 +279,7 @@ class LocomotionGait(CommandTermBase):
     def set_eval_mode(self, evaluating: bool) -> None:
         self._initialize_indices(None, evaluating=evaluating)
 
-    def resample_frequency(self, env_ids: torch.Tensor) -> None:
+    def resample_frequency(self, env_ids: torch.Tensor, commands: torch.Tensor | None = None) -> None:
         if self.gait_freq is None or self.phase_dt is None:
             return
 
@@ -191,6 +293,22 @@ class LocomotionGait(CommandTermBase):
             low = self.mean_gait_freq - self.gait_period_randomization_width
             high = self.mean_gait_freq + self.gait_period_randomization_width
             self.gait_freq[idx] = torch_rand_float(low, high, (idx.shape[0], 1), device=self.env.device)
+
+        command_subset = self._get_command_subset(idx, commands)
+        if command_subset is not None and (
+            self.adaptive_gait_freq_from_lin_speed > 0.0 or self.adaptive_gait_freq_from_yaw_speed > 0.0
+        ):
+            lin_speed = torch.linalg.norm(command_subset[:, :2], dim=1, keepdim=True)
+            yaw_speed = torch.abs(command_subset[:, 2:3])
+            self.gait_freq[idx] += (
+                self.adaptive_gait_freq_from_lin_speed * lin_speed
+                + self.adaptive_gait_freq_from_yaw_speed * yaw_speed
+            )
+
+        if self.adaptive_gait_freq_min is not None or self.adaptive_gait_freq_max is not None:
+            min_freq = self.adaptive_gait_freq_min if self.adaptive_gait_freq_min is not None else -float("inf")
+            max_freq = self.adaptive_gait_freq_max if self.adaptive_gait_freq_max is not None else float("inf")
+            self.gait_freq[idx] = torch.clamp(self.gait_freq[idx], min=min_freq, max=max_freq)
 
         self.phase_dt[idx] = 2 * torch.pi * self.env.dt * self.gait_freq[idx]
 
@@ -226,3 +344,15 @@ class LocomotionGait(CommandTermBase):
         if isinstance(env_ids, torch.Tensor):
             return env_ids.to(device=self.env.device, dtype=torch.long)
         return torch.as_tensor(env_ids, device=self.env.device, dtype=torch.long)
+
+    def _get_command_subset(self, env_ids: torch.Tensor, commands: torch.Tensor | None) -> torch.Tensor | None:
+        command_tensor = commands
+        if command_tensor is None and hasattr(self, "manager"):
+            command_tensor = getattr(self.manager, "commands", None)
+        if command_tensor is None:
+            return None
+        if command_tensor.shape[0] == self.env.num_envs:
+            return command_tensor[env_ids, :3]
+        if command_tensor.shape[0] == env_ids.shape[0]:
+            return command_tensor[:, :3]
+        return None

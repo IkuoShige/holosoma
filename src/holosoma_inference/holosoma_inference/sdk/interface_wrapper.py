@@ -43,6 +43,10 @@ class InterfaceWrapper:
         self._joystick_slew_rate_lin_x = 2.0
         self._joystick_slew_rate_lin_y = 1.5
         self._joystick_slew_rate_yaw = 2.5
+        self._joystick_max_vx_override: float | None = None
+        self._joystick_max_vy_override: float | None = None
+        self._joystick_max_vyaw_override: float | None = None
+        self._joystick_deadzone_override: float | None = None
         self._joystick_filtered_lin_cmd = np.zeros((1, 2), dtype=np.float64)
         self._joystick_filtered_ang_cmd = np.zeros((1, 1), dtype=np.float64)
         self._joystick_last_update_time = time.monotonic()
@@ -317,13 +321,81 @@ class InterfaceWrapper:
             return None
         return self._wc_key_map.get(getattr(wc_msg, "keys", 0), None)
 
+    def configure_joystick_limits(
+        self,
+        *,
+        max_vx: float | None = None,
+        max_vy: float | None = None,
+        max_vyaw: float | None = None,
+        deadzone: float | None = None,
+    ) -> None:
+        """Configure joystick velocity limits and deadzone at runtime."""
+        if max_vx is not None:
+            self._joystick_max_vx_override = float(max_vx)
+        if max_vy is not None:
+            self._joystick_max_vy_override = float(max_vy)
+        if max_vyaw is not None:
+            self._joystick_max_vyaw_override = float(max_vyaw)
+        if deadzone is not None:
+            self._joystick_deadzone_override = float(deadzone)
+
+        # Booster scales raw stick values with these limits in the evdev reader,
+        # so propagate runtime overrides to that layer too.
+        if self.sdk_type == "booster":
+            service = getattr(self, "booster_remote_control", None)
+            if service is not None:
+                if self._joystick_max_vx_override is not None:
+                    service.config.max_vx = self._joystick_max_vx_override
+                if self._joystick_max_vy_override is not None:
+                    service.config.max_vy = self._joystick_max_vy_override
+                if self._joystick_max_vyaw_override is not None:
+                    service.config.max_vyaw = self._joystick_max_vyaw_override
+                if self._joystick_deadzone_override is not None:
+                    service.config.control_threshold = self._joystick_deadzone_override
+
+    def configure_joystick_shaping(
+        self,
+        *,
+        lpf_alpha: float | None = None,
+        slew_rate_lin_x: float | None = None,
+        slew_rate_lin_y: float | None = None,
+        slew_rate_yaw: float | None = None,
+    ) -> None:
+        """Configure joystick shaping filters at runtime."""
+        if lpf_alpha is not None:
+            self._joystick_lpf_alpha = float(np.clip(lpf_alpha, 0.0, 1.0))
+        if slew_rate_lin_x is not None:
+            self._joystick_slew_rate_lin_x = max(float(slew_rate_lin_x), 0.0)
+        if slew_rate_lin_y is not None:
+            self._joystick_slew_rate_lin_y = max(float(slew_rate_lin_y), 0.0)
+        if slew_rate_yaw is not None:
+            self._joystick_slew_rate_yaw = max(float(slew_rate_yaw), 0.0)
+
+    def _get_joystick_deadzone(self) -> float:
+        if self._joystick_deadzone_override is not None:
+            return self._joystick_deadzone_override
+        if self.sdk_type == "booster" and getattr(self, "booster_remote_control", None) is not None:
+            return float(self.booster_remote_control.config.control_threshold)
+        return 0.1
+
     def _get_joystick_command_limits(self):
         """Get per-axis joystick command limits used for diagonal clipping."""
+        max_vx = 1.0
+        max_vy = 1.0
+        max_vyaw = 1.0
         if self.sdk_type == "booster" and getattr(self, "booster_remote_control", None) is not None:
             cfg = self.booster_remote_control.config
-            return float(cfg.max_vx), float(cfg.max_vy), float(cfg.max_vyaw)
-        # Unitree wireless controller is normalized around [-1, 1].
-        return 1.0, 1.0, 1.0
+            max_vx = float(cfg.max_vx)
+            max_vy = float(cfg.max_vy)
+            max_vyaw = float(cfg.max_vyaw)
+
+        if self._joystick_max_vx_override is not None:
+            max_vx = self._joystick_max_vx_override
+        if self._joystick_max_vy_override is not None:
+            max_vy = self._joystick_max_vy_override
+        if self._joystick_max_vyaw_override is not None:
+            max_vyaw = self._joystick_max_vyaw_override
+        return max_vx, max_vy, max_vyaw
 
     def _shape_joystick_commands(self, target_lin_x, target_lin_y, target_yaw, stand_command):
         """Apply diagonal clipping, low-pass filtering, and slew limiting."""
@@ -412,10 +484,11 @@ class InterfaceWrapper:
             lx = float(getattr(wc_msg, "lx", 0.0))
             ly = float(getattr(wc_msg, "ly", 0.0))
             rx = float(getattr(wc_msg, "rx", 0.0))
+            deadzone = self._get_joystick_deadzone()
 
-            target_lin_x = ly if abs(ly) > 0.1 else 0.0
-            target_lin_y = -(lx if abs(lx) > 0.1 else 0.0)
-            target_yaw = -(rx if abs(rx) > 0.1 else 0.0)
+            target_lin_x = ly if abs(ly) > deadzone else 0.0
+            target_lin_y = -(lx if abs(lx) > deadzone else 0.0)
+            target_yaw = -(rx if abs(rx) > deadzone else 0.0)
 
             shaped_lin_x, shaped_lin_y, shaped_yaw = self._shape_joystick_commands(
                 target_lin_x, target_lin_y, target_yaw, stand_command

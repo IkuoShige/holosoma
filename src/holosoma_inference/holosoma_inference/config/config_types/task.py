@@ -39,6 +39,18 @@ class TaskConfig:
     joystick_device: int = 0
     """Joystick device index."""
 
+    joystick_max_vx: float | None = None
+    """Optional joystick forward velocity limit (m/s). If None, uses backend defaults."""
+
+    joystick_max_vy: float | None = None
+    """Optional joystick lateral velocity limit (m/s). If None, uses backend defaults."""
+
+    joystick_max_vyaw: float | None = None
+    """Optional joystick yaw-rate limit (rad/s). If None, uses backend defaults."""
+
+    joystick_deadzone: float | None = None
+    """Optional joystick deadzone threshold. If None, uses backend defaults."""
+
     use_sim_time: bool = False
     """Use synchronized simulation time for WBT policies."""
 

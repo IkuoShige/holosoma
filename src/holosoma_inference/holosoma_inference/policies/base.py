@@ -205,6 +205,7 @@ class BasePolicy:
             "policy_callable": self.policy,
             "onnx_kp": self.onnx_kp,
             "onnx_kd": self.onnx_kd,
+            "onnx_command_ranges": self.onnx_command_ranges,
         }
 
     def _restore_policy_state(self, state: dict):
@@ -215,6 +216,7 @@ class BasePolicy:
         self.policy = state["policy_callable"]
         self.onnx_kp = state["onnx_kp"]
         self.onnx_kd = state["onnx_kd"]
+        self.onnx_command_ranges = state.get("onnx_command_ranges")
 
     def _activate_policy(self, index: int, announce: bool = True):
         """Activate a preloaded policy."""
@@ -252,6 +254,57 @@ class BasePolicy:
     def _on_policy_switched(self, model_path: str):
         """Hook for derived classes to reset state after loading a new policy."""
         _ = model_path
+        self._configure_joystick_from_policy_metadata()
+
+    @staticmethod
+    def _extract_abs_command_limit(command_ranges: dict, key: str) -> float | None:
+        raw = command_ranges.get(key)
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            return None
+        try:
+            lo = float(raw[0])
+            hi = float(raw[1])
+        except (TypeError, ValueError):
+            return None
+        return max(abs(lo), abs(hi))
+
+    def _configure_joystick_from_policy_metadata(self) -> None:
+        """Apply joystick limits from CLI overrides and ONNX metadata."""
+        if not hasattr(self, "interface"):
+            return
+
+        task_cfg = self.config.task
+        max_vx = task_cfg.joystick_max_vx
+        max_vy = task_cfg.joystick_max_vy
+        max_vyaw = task_cfg.joystick_max_vyaw
+        deadzone = task_cfg.joystick_deadzone
+
+        command_ranges = self.onnx_command_ranges if isinstance(self.onnx_command_ranges, dict) else None
+        if command_ranges is not None:
+            if max_vx is None:
+                max_vx = self._extract_abs_command_limit(command_ranges, "lin_vel_x")
+            if max_vy is None:
+                max_vy = self._extract_abs_command_limit(command_ranges, "lin_vel_y")
+            if max_vyaw is None:
+                max_vyaw = self._extract_abs_command_limit(command_ranges, "ang_vel_yaw")
+
+        if max_vx is None and max_vy is None and max_vyaw is None and deadzone is None:
+            return
+
+        self.interface.configure_joystick_limits(
+            max_vx=max_vx,
+            max_vy=max_vy,
+            max_vyaw=max_vyaw,
+            deadzone=deadzone,
+        )
+        vx_text = f"{max_vx:.3f}" if max_vx is not None else "default"
+        vy_text = f"{max_vy:.3f}" if max_vy is not None else "default"
+        vyaw_text = f"{max_vyaw:.3f}" if max_vyaw is not None else "default"
+        deadzone_text = f"{deadzone:.3f}" if deadzone is not None else "default"
+        log = self.logger if hasattr(self, "logger") else logger
+        log.info(
+            f"Joystick limits updated: vx={vx_text}, vy={vy_text}, vyaw={vyaw_text}, deadzone={deadzone_text}"
+        )
 
     def _init_command_components(self):
         """Initialize control-related components and commands."""
@@ -278,6 +331,7 @@ class BasePolicy:
         self.cmd_q = np.zeros(self.num_dofs)
         self.cmd_dq = np.zeros(self.num_dofs)
         self.cmd_tau = np.zeros(self.num_dofs)
+        self._configure_joystick_from_policy_metadata()
 
     def _init_phase_components(self):
         """Initialize phase components."""
@@ -376,6 +430,9 @@ class BasePolicy:
         # Extract KP/KD from metadata (will be None if not present)
         self.onnx_kp = np.array(metadata["kp"]) if "kp" in metadata else None
         self.onnx_kd = np.array(metadata["kd"]) if "kd" in metadata else None
+        self.onnx_command_ranges = metadata.get("command_ranges")
+        if not isinstance(self.onnx_command_ranges, dict):
+            self.onnx_command_ranges = None
 
         if self.onnx_kp is not None:
             logger.info(f"Loaded KP/KD from ONNX metadata: {Path(model_path).name}")

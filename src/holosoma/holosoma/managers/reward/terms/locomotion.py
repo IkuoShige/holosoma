@@ -26,7 +26,38 @@ if TYPE_CHECKING:
     from holosoma.envs.locomotion.locomotion_manager import LeggedRobotLocomotionManager
 
 
-def _expected_foot_height(phi: torch.Tensor, swing_height: float) -> torch.Tensor:
+def _resolve_body_index(
+    env: LeggedRobotLocomotionManager,
+    *,
+    body_name: str,
+    fallback_contains: str | None = None,
+    cache_key: str,
+) -> int:
+    cache_attr = f"_reward_cached_body_index_{cache_key}"
+    cached = getattr(env, cache_attr, None)
+    if isinstance(cached, int) and cached >= 0:
+        return cached
+
+    chosen_name: str | None = None
+    if body_name in env.body_names:
+        chosen_name = body_name
+    elif fallback_contains is not None:
+        for candidate in env.body_names:
+            if fallback_contains in candidate:
+                chosen_name = candidate
+                break
+
+    if chosen_name is None:
+        raise ValueError(
+            f"Could not resolve body index for body_name='{body_name}' (fallback_contains={fallback_contains})."
+        )
+
+    index = int(env.simulator.find_rigid_body_indice(chosen_name))
+    setattr(env, cache_attr, index)
+    return index
+
+
+def _expected_foot_height(phi: torch.Tensor, swing_height: float | torch.Tensor) -> torch.Tensor:
     """Expected foot height from gait phase using a cubic Bézier profile."""
 
     def cubic_bezier_interpolation(y_start: torch.Tensor, y_end: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -35,8 +66,13 @@ def _expected_foot_height(phi: torch.Tensor, swing_height: float) -> torch.Tenso
         return y_start + y_diff * bezier
 
     x = (phi + torch.pi) / (2 * torch.pi)
-    stance = cubic_bezier_interpolation(torch.zeros_like(x), torch.full_like(x, swing_height), 2 * x)
-    swing = cubic_bezier_interpolation(torch.full_like(x, swing_height), torch.zeros_like(x), 2 * x - 1)
+    if isinstance(swing_height, torch.Tensor):
+        swing_height_tensor = torch.ones_like(x) * swing_height.to(device=phi.device, dtype=phi.dtype)
+    else:
+        swing_height_tensor = torch.full_like(x, swing_height)
+
+    stance = cubic_bezier_interpolation(torch.zeros_like(x), swing_height_tensor, 2 * x)
+    swing = cubic_bezier_interpolation(swing_height_tensor, torch.zeros_like(x), 2 * x - 1)
     return torch.where(x <= 0.5, stance, swing)
 
 
@@ -140,7 +176,46 @@ def limits_dof_pos(env: LeggedRobotLocomotionManager, soft_dof_pos_limit: float 
 # ================================================================================================
 
 
-def tracking_lin_vel(env, tracking_sigma: float = 0.25) -> torch.Tensor:
+def _get_push_velocity_compensation_xy(
+    env,
+    *,
+    tau_s: float,
+    cutoff_s: float,
+) -> torch.Tensor:
+    if tau_s <= 0.0:
+        return torch.zeros((env.num_envs, 2), dtype=torch.float32, device=env.device)
+    if not hasattr(env, "record_push_robot_vel_buf"):
+        return torch.zeros((env.num_envs, 2), dtype=torch.float32, device=env.device)
+
+    push_world_xy = env.record_push_robot_vel_buf
+    if not isinstance(push_world_xy, torch.Tensor) or push_world_xy.shape[0] != env.num_envs or push_world_xy.shape[1] < 2:
+        return torch.zeros((env.num_envs, 2), dtype=torch.float32, device=env.device)
+
+    # Push impulses are injected as world-frame base linear velocities in XY.
+    push_world = torch.zeros((env.num_envs, 3), dtype=torch.float32, device=env.device)
+    push_world[:, :2] = push_world_xy[:, :2]
+    push_base = quat_rotate_inverse(env.base_quat, push_world, w_last=True)[:, :2]
+
+    decay = torch.ones(env.num_envs, dtype=torch.float32, device=env.device)
+    if hasattr(env, "randomization_manager") and env.randomization_manager is not None:
+        state = env.randomization_manager.get_state("push_randomizer_state")
+        if state is not None and getattr(state, "push_robot_counter", None) is not None:
+            elapsed_s = state.push_robot_counter.float() * env.dt
+            decay = torch.exp(-elapsed_s / tau_s)
+            if cutoff_s > 0.0:
+                decay = torch.where(elapsed_s <= cutoff_s, decay, torch.zeros_like(decay))
+
+    return push_base * decay.unsqueeze(1)
+
+
+def tracking_lin_vel(
+    env,
+    tracking_sigma: float = 0.25,
+    push_compensation_tau_s: float = 0.0,
+    push_compensation_cutoff_s: float = 0.0,
+    push_compensation_max_speed: float = 0.0,
+    push_compensation_max_cmd_ratio: float = 0.0,
+) -> torch.Tensor:
     """Reward tracking of linear velocity commands (xy axes).
 
     Uses exponential reward: exp(-error / sigma)
@@ -148,12 +223,31 @@ def tracking_lin_vel(env, tracking_sigma: float = 0.25) -> torch.Tensor:
     Args:
         env: The environment instance
         tracking_sigma: Sigma for exponential reward scaling
+        push_compensation_tau_s: Exponential decay constant for disturbance velocity compensation (0 disables)
+        push_compensation_cutoff_s: Max elapsed time window after push to apply compensation (0 disables cutoff)
+        push_compensation_max_speed: Absolute cap for compensated speed magnitude
+        push_compensation_max_cmd_ratio: Additional cap proportional to command speed
 
     Returns:
         Reward tensor [num_envs]
     """
     commands = env.command_manager.commands
-    lin_vel_error = torch.sum(torch.square(commands[:, :2] - get_base_lin_vel(env)[:, :2]), dim=1)
+    measured_lin_vel = get_base_lin_vel(env)[:, :2]
+    if push_compensation_tau_s > 0.0:
+        compensated = _get_push_velocity_compensation_xy(
+            env,
+            tau_s=push_compensation_tau_s,
+            cutoff_s=push_compensation_cutoff_s,
+        )
+        if push_compensation_max_speed > 0.0 or push_compensation_max_cmd_ratio > 0.0:
+            comp_norm = torch.linalg.norm(compensated, dim=1).clamp(min=1e-6)
+            cmd_norm = torch.linalg.norm(commands[:, :2], dim=1)
+            max_allowed = push_compensation_max_speed + push_compensation_max_cmd_ratio * cmd_norm
+            scale = torch.clamp(max_allowed / comp_norm, max=1.0)
+            compensated = compensated * scale.unsqueeze(1)
+        measured_lin_vel = measured_lin_vel - compensated
+
+    lin_vel_error = torch.sum(torch.square(commands[:, :2] - measured_lin_vel), dim=1)
     return torch.exp(-lin_vel_error / tracking_sigma)
 
 
@@ -188,6 +282,36 @@ def penalty_ang_vel_xy(env) -> torch.Tensor:
     return torch.sum(torch.square(ang_vel[:, :2]), dim=1)
 
 
+def penalty_head_ang_vel_xy(
+    env,
+    head_body_name: str = "Head_2",
+    fallback_contains: str = "Head",
+    deadzone: float = 0.0,
+) -> torch.Tensor:
+    """Penalize head pitch/roll angular velocity (camera blur proxy).
+
+    Args:
+        env: The environment instance
+        head_body_name: Preferred rigid body name for the camera/head link
+        fallback_contains: Fallback substring used if exact body name is not found
+        deadzone: Ignore angular velocity magnitudes below this threshold (rad/s)
+
+    Returns:
+        Penalty tensor [num_envs]
+    """
+    head_idx = _resolve_body_index(
+        env,
+        body_name=head_body_name,
+        fallback_contains=fallback_contains,
+        cache_key="head_ang_vel_xy",
+    )
+    head_ang_vel_world = env.simulator._rigid_body_ang_vel[:, head_idx, :2]
+    head_ang_speed_xy = torch.linalg.norm(head_ang_vel_world, dim=1)
+    if deadzone > 0.0:
+        head_ang_speed_xy = (head_ang_speed_xy - deadzone).clip(min=0.0)
+    return torch.square(head_ang_speed_xy)
+
+
 def penalty_close_feet_xy(env, close_feet_threshold: float = 0.05) -> torch.Tensor:
     """Penalize when feet are too close together in xy plane.
 
@@ -213,6 +337,34 @@ def penalty_close_feet_xy(env, close_feet_threshold: float = 0.05) -> torch.Tens
 
     # Return penalty when feet are too close
     return (feet_distance < close_feet_threshold).float()
+
+
+def penalty_far_feet_xy(env, far_feet_threshold: float = 0.35) -> torch.Tensor:
+    """Penalize excessively wide foot spacing in the lateral direction.
+
+    Args:
+        env: The environment instance
+        far_feet_threshold: Maximum desired lateral distance between feet
+
+    Returns:
+        Penalty tensor [num_envs]
+    """
+    left_foot_xy = env.simulator._rigid_body_pos[:, env.feet_indices[0], :2]
+    right_foot_xy = env.simulator._rigid_body_pos[:, env.feet_indices[1], :2]
+
+    # Get base orientation
+    base_forward = quat_apply(env.base_quat, base_forward_vector(env), w_last=True)
+    base_yaw = torch.atan2(base_forward[:, 1], base_forward[:, 0])
+
+    # Calculate perpendicular distance in base-local coordinates
+    feet_distance = torch.abs(
+        torch.cos(base_yaw) * (left_foot_xy[:, 1] - right_foot_xy[:, 1])
+        - torch.sin(base_yaw) * (left_foot_xy[:, 0] - right_foot_xy[:, 0])
+    )
+
+    # Penalize width above threshold (hinge-squared)
+    far_error = (feet_distance - far_feet_threshold).clip(min=0.0)
+    return torch.square(far_error)
 
 
 def base_height(
@@ -250,15 +402,29 @@ def base_height(
     return base_height_penalty
 
 
-def feet_phase(env, swing_height: float = 0.08, tracking_sigma: float = 0.25) -> torch.Tensor:
+def feet_phase(
+    env,
+    swing_height: float = 0.08,
+    tracking_sigma: float = 0.25,
+    dynamic_swing_height_from_lin_speed: float = 0.0,
+    dynamic_swing_height_from_yaw_speed: float = 0.0,
+    dynamic_swing_height_from_gait_freq: float = 0.0,
+    dynamic_swing_height_min: float | None = None,
+    dynamic_swing_height_max: float | None = None,
+) -> torch.Tensor:
     """Reward for tracking desired foot height based on gait phase.
 
     Based on MuJoCo Playground's implementation.
 
     Args:
         env: The environment instance
-        swing_height: Maximum height during swing phase
+        swing_height: Base maximum height during swing phase
         tracking_sigma: Sigma for exponential reward scaling
+        dynamic_swing_height_from_lin_speed: Extra swing height gain from |v_xy| command
+        dynamic_swing_height_from_yaw_speed: Extra swing height gain from |yaw| command
+        dynamic_swing_height_from_gait_freq: Extra swing height gain from gait frequency above nominal
+        dynamic_swing_height_min: Optional lower clamp for dynamic swing height
+        dynamic_swing_height_max: Optional upper clamp for dynamic swing height
 
     Returns:
         Reward tensor [num_envs]
@@ -267,10 +433,33 @@ def feet_phase(env, swing_height: float = 0.08, tracking_sigma: float = 0.25) ->
     foot_z_left = env.terrain_manager.get_state("locomotion_terrain").feet_heights[:, 0]
     foot_z_right = env.terrain_manager.get_state("locomotion_terrain").feet_heights[:, 1]
 
+    # Build per-env swing height (optionally speed/frequency adaptive)
+    swing_height_tensor = torch.full_like(foot_z_left, float(swing_height))
+    if dynamic_swing_height_from_lin_speed > 0.0 or dynamic_swing_height_from_yaw_speed > 0.0:
+        commands = env.command_manager.commands
+        lin_speed = torch.linalg.norm(commands[:, :2], dim=1)
+        yaw_speed = torch.abs(commands[:, 2])
+        swing_height_tensor += (
+            dynamic_swing_height_from_lin_speed * lin_speed + dynamic_swing_height_from_yaw_speed * yaw_speed
+        )
+
+    if dynamic_swing_height_from_gait_freq > 0.0:
+        gait_state = env.command_manager.get_state("locomotion_gait")
+        if gait_state is not None and getattr(gait_state, "gait_freq", None) is not None:
+            gait_freq = gait_state.gait_freq.squeeze(1)
+            nominal_freq = float(getattr(gait_state, "mean_gait_freq", 0.0))
+            swing_height_tensor += dynamic_swing_height_from_gait_freq * torch.clamp(gait_freq - nominal_freq, min=0.0)
+
+    min_height = swing_height if dynamic_swing_height_min is None else dynamic_swing_height_min
+    if dynamic_swing_height_max is not None:
+        swing_height_tensor = torch.clamp(swing_height_tensor, min=min_height, max=dynamic_swing_height_max)
+    else:
+        swing_height_tensor = torch.clamp(swing_height_tensor, min=min_height)
+
     # Calculate expected foot heights based on phase
     gait_state = env.command_manager.get_state("locomotion_gait")
-    rz_left = _expected_foot_height(gait_state.phase[:, 0], swing_height)
-    rz_right = _expected_foot_height(gait_state.phase[:, 1], swing_height)
+    rz_left = _expected_foot_height(gait_state.phase[:, 0], swing_height_tensor)
+    rz_right = _expected_foot_height(gait_state.phase[:, 1], swing_height_tensor)
 
     # Calculate height tracking errors
     error_left = torch.square(foot_z_left - rz_left)
@@ -280,6 +469,100 @@ def feet_phase(env, swing_height: float = 0.08, tracking_sigma: float = 0.25) ->
     total_error = error_left + error_right
 
     return torch.exp(-total_error / tracking_sigma)
+
+
+def stride_pitch_coupling(
+    env,
+    tracking_sigma: float = 0.02,
+    min_cmd_speed: float = 0.2,
+    base_stride: float = 0.10,
+    stride_from_lin_speed: float = 0.08,
+    stride_from_yaw_speed: float = 0.03,
+    stride_from_gait_freq: float = 0.05,
+    min_stride: float = 0.08,
+    max_stride: float = 0.35,
+    actual_speed_gate_ratio: float = 0.0,
+    actual_speed_gate_threshold: float = 0.2,
+    actual_speed_gate_vy_weight: float = 0.35,
+) -> torch.Tensor:
+    """Reward speed-dependent stride with phase-locked fore-aft foot cycling.
+
+    This term encourages:
+    1) larger stride as commanded translational speed increases
+    2) actual leg cycling (foot x in base frame follows gait phase), not static front/back split
+    """
+    commands = env.command_manager.commands
+    # Favor forward component for stride targets while keeping some lateral contribution.
+    lin_speed = torch.abs(commands[:, 0]) + 0.35 * torch.abs(commands[:, 1])
+    yaw_speed = torch.abs(commands[:, 2])
+
+    left_foot = env.simulator._rigid_body_pos[:, env.feet_indices[0], :]
+    right_foot = env.simulator._rigid_body_pos[:, env.feet_indices[1], :]
+    base_pos = env.simulator.robot_root_states[:, :3]
+    left_rel_base = quat_rotate_inverse(env.base_quat, left_foot - base_pos, w_last=True)
+    right_rel_base = quat_rotate_inverse(env.base_quat, right_foot - base_pos, w_last=True)
+    left_x = left_rel_base[:, 0]
+    right_x = right_rel_base[:, 0]
+
+    desired_stride = torch.full_like(left_x, float(base_stride))
+    desired_stride += stride_from_lin_speed * lin_speed + stride_from_yaw_speed * yaw_speed
+
+    if stride_from_gait_freq > 0.0:
+        gait_state = env.command_manager.get_state("locomotion_gait")
+        if gait_state is not None and getattr(gait_state, "gait_freq", None) is not None:
+            gait_freq = gait_state.gait_freq.squeeze(1)
+            nominal_freq = float(getattr(gait_state, "mean_gait_freq", 0.0))
+            desired_stride += stride_from_gait_freq * torch.clamp(gait_freq - nominal_freq, min=0.0)
+
+    desired_stride = torch.clamp(desired_stride, min=min_stride, max=max_stride)
+
+    gait_state = env.command_manager.get_state("locomotion_gait")
+    if gait_state is not None and getattr(gait_state, "phase", None) is not None:
+        phase = gait_state.phase
+        # Each foot should oscillate around the base with half of desired stride amplitude.
+        half_stride = 0.5 * desired_stride
+        left_target_x = half_stride * torch.sin(phase[:, 0])
+        right_target_x = half_stride * torch.sin(phase[:, 1])
+        stride_error = torch.square(left_x - left_target_x) + torch.square(right_x - right_target_x)
+    else:
+        # Fallback if gait state is unavailable.
+        stride = torch.abs(left_x - right_x)
+        stride_error = torch.square(stride - desired_stride)
+
+    moving_mask = (lin_speed + 0.5 * yaw_speed) > min_cmd_speed
+    reward = torch.exp(-stride_error / tracking_sigma)
+    reward = torch.where(moving_mask, reward, torch.ones_like(reward))
+
+    if actual_speed_gate_ratio > 0.0:
+        base_lin_vel = get_base_lin_vel(env)
+        actual_speed = torch.abs(base_lin_vel[:, 0]) + actual_speed_gate_vy_weight * torch.abs(base_lin_vel[:, 1])
+        desired_min_speed = actual_speed_gate_ratio * lin_speed
+        speed_gate = torch.ones_like(reward)
+        active_mask = lin_speed > actual_speed_gate_threshold
+        gated = torch.clamp(actual_speed / (desired_min_speed + 1e-6), min=0.0, max=1.0)
+        speed_gate = torch.where(active_mask, gated, speed_gate)
+        reward = reward * speed_gate
+
+    return reward
+
+
+def penalty_stall_when_commanded(
+    env,
+    command_speed_threshold: float = 0.35,
+    min_speed_ratio: float = 0.35,
+    vy_speed_weight: float = 0.35,
+) -> torch.Tensor:
+    """Penalize failing to translate when significant translational command is present."""
+    commands = env.command_manager.commands
+    commanded_speed = torch.abs(commands[:, 0]) + vy_speed_weight * torch.abs(commands[:, 1])
+    actual_lin = get_base_lin_vel(env)
+    actual_speed = torch.abs(actual_lin[:, 0]) + vy_speed_weight * torch.abs(actual_lin[:, 1])
+
+    desired_min_speed = min_speed_ratio * commanded_speed
+    speed_shortfall = (desired_min_speed - actual_speed).clip(min=0.0)
+    penalty = torch.square(speed_shortfall)
+    active_mask = commanded_speed > command_speed_threshold
+    return torch.where(active_mask, penalty, torch.zeros_like(penalty))
 
 
 def pose(

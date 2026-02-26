@@ -81,7 +81,14 @@ k1_22dof_agile_fast_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_agile_fast_sac_manager"),
     algo=replace(
-        algo.fast_sac, config=replace(algo.fast_sac.config, num_learning_iterations=100000, use_symmetry=True)
+        algo.fast_sac,
+        config=replace(
+            algo.fast_sac.config,
+            num_learning_iterations=100000,
+            use_symmetry=True,
+            target_entropy_ratio=0.25,
+            alpha_init=0.01,
+        ),
     ),
     simulator=simulator.isaacgym,
     robot=robot.k1_22dof,

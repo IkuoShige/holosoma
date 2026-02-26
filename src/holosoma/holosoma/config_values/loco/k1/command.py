@@ -44,17 +44,31 @@ k1_22dof_agile_command = CommandManagerCfg(
     setup_terms={
         "locomotion_gait": CommandTermCfg(
             func="holosoma.managers.command.terms.locomotion:LocomotionGait",
+            params={
+                # Keep cadence high and mostly constant (about 2.17 Hz gait cycles ~= 4.35 steps/s total).
+                "gait_period": 0.46,
+                "gait_period_randomization_width": 0.05,
+                "adaptive_gait_freq_from_lin_speed": 0.0,
+                "adaptive_gait_freq_from_yaw_speed": 0.0,
+                "adaptive_gait_freq_min": 2.0,
+                "adaptive_gait_freq_max": 2.3,
+            },
         ),
         "locomotion_command": CommandTermCfg(
             func="holosoma.managers.command.terms.locomotion:LocomotionCommand",
             params={
                 "command_ranges": {
                     "lin_vel_x": [-1.5, 2.5],
-                    "lin_vel_y": [-1.0, 1.0],
+                    "lin_vel_y": [-1.2, 1.2],
                     "ang_vel_yaw": [-1.5, 1.5],
                     "heading": [-3.14, 3.14],
                 },
                 "stand_prob": 0.1,
+                # High-speed soccer-like cases should emphasize forward + yaw while keeping vy available.
+                "combined_motion_prob": 0.3,
+                "combined_lin_vel_x_range": [1.4, 2.5],
+                "combined_lin_vel_y_range": [-0.6, 0.6],
+                "combined_ang_vel_yaw_abs_range": [0.6, 1.5],
             },
         ),
     },

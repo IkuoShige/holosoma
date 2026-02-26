@@ -188,7 +188,13 @@ k1_22dof_agile_loco = RewardManagerCfg(
         "tracking_lin_vel": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:tracking_lin_vel",
             weight=4.0,
-            params={"tracking_sigma": 0.20},
+            params={
+                "tracking_sigma": 0.20,
+                "push_compensation_tau_s": 0.18,
+                "push_compensation_cutoff_s": 0.45,
+                "push_compensation_max_speed": 1.2,
+                "push_compensation_max_cmd_ratio": 0.8,
+            },
         ),
         "tracking_ang_vel": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:tracking_ang_vel",
@@ -198,12 +204,39 @@ k1_22dof_agile_loco = RewardManagerCfg(
         "feet_phase": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:feet_phase",
             weight=5.0,
-            params={"swing_height": 0.12, "tracking_sigma": 0.008},
+            params={
+                "swing_height": 0.07,
+                "tracking_sigma": 0.008,
+                "dynamic_swing_height_from_lin_speed": 0.0,
+                "dynamic_swing_height_from_yaw_speed": 0.0,
+                "dynamic_swing_height_from_gait_freq": 0.0,
+                "dynamic_swing_height_max": 0.18,
+            },
+        ),
+        "stride_pitch_coupling": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:stride_pitch_coupling",
+            weight=3.0,
+            params={
+                "tracking_sigma": 0.04,
+                "min_cmd_speed": 0.2,
+                "base_stride": 0.12,
+                "stride_from_lin_speed": 0.13,
+                "stride_from_yaw_speed": 0.04,
+                "stride_from_gait_freq": 0.0,
+                "min_stride": 0.10,
+                "max_stride": 0.38,
+            },
         ),
         "penalty_ang_vel_xy": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_ang_vel_xy",
             weight=-1.0,
             params={},
+            tags=["penalty_curriculum"],
+        ),
+        "penalty_head_ang_vel_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_head_ang_vel_xy",
+            weight=-1.2,
+            params={"head_body_name": "Head_2", "fallback_contains": "Head", "deadzone": 0.6},
             tags=["penalty_curriculum"],
         ),
         "penalty_orientation": RewardTermCfg(
@@ -214,7 +247,7 @@ k1_22dof_agile_loco = RewardManagerCfg(
         ),
         "penalty_action_rate": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
-            weight=-2.0,
+            weight=-1.0,
             params={},
             tags=["penalty_curriculum"],
         ),
@@ -222,6 +255,12 @@ k1_22dof_agile_loco = RewardManagerCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_close_feet_xy",
             weight=-10.0,
             params={"close_feet_threshold": 0.15},
+            tags=["penalty_curriculum"],
+        ),
+        "penalty_far_feet_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_far_feet_xy",
+            weight=-0.8,
+            params={"far_feet_threshold": 0.38},
             tags=["penalty_curriculum"],
         ),
         "penalty_feet_ori": RewardTermCfg(
@@ -300,8 +339,14 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
     terms={
         "tracking_lin_vel": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:tracking_lin_vel",
-            weight=4.0,
-            params={"tracking_sigma": 0.20},
+            weight=6.0,
+            params={
+                "tracking_sigma": 0.20,
+                "push_compensation_tau_s": 0.18,
+                "push_compensation_cutoff_s": 0.45,
+                "push_compensation_max_speed": 1.2,
+                "push_compensation_max_cmd_ratio": 0.8,
+            },
         ),
         "tracking_ang_vel": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:tracking_ang_vel",
@@ -314,6 +359,12 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
             params={},
             tags=["penalty_curriculum"],
         ),
+        "penalty_head_ang_vel_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_head_ang_vel_xy",
+            weight=-1.2,
+            params={"head_body_name": "Head_2", "fallback_contains": "Head", "deadzone": 0.6},
+            tags=["penalty_curriculum"],
+        ),
         "penalty_orientation": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_orientation",
             weight=-15.0,
@@ -322,14 +373,44 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
         ),
         "penalty_action_rate": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
-            weight=-2.0,
+            weight=-0.3,
             params={},
             tags=["penalty_curriculum"],
         ),
         "feet_phase": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:feet_phase",
-            weight=5.0,
-            params={"swing_height": 0.12, "tracking_sigma": 0.008},
+            weight=4.0,
+            params={
+                "swing_height": 0.07,
+                "tracking_sigma": 0.008,
+                "dynamic_swing_height_from_lin_speed": 0.0,
+                "dynamic_swing_height_from_yaw_speed": 0.0,
+                "dynamic_swing_height_from_gait_freq": 0.0,
+                "dynamic_swing_height_max": 0.18,
+            },
+        ),
+        "stride_pitch_coupling": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:stride_pitch_coupling",
+            weight=2.5,
+            params={
+                "tracking_sigma": 0.04,
+                "min_cmd_speed": 0.2,
+                "base_stride": 0.12,
+                "stride_from_lin_speed": 0.13,
+                "stride_from_yaw_speed": 0.04,
+                "stride_from_gait_freq": 0.0,
+                "min_stride": 0.10,
+                "max_stride": 0.38,
+                "actual_speed_gate_ratio": 0.35,
+                "actual_speed_gate_threshold": 0.30,
+                "actual_speed_gate_vy_weight": 0.35,
+            },
+        ),
+        "penalty_stall_when_commanded": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_stall_when_commanded",
+            weight=-4.0,
+            params={"command_speed_threshold": 0.35, "min_speed_ratio": 0.35, "vy_speed_weight": 0.35},
+            tags=["penalty_curriculum"],
         ),
         "pose": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:pose",
@@ -371,6 +452,12 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
             params={"close_feet_threshold": 0.15},
             tags=["penalty_curriculum"],
         ),
+        "penalty_far_feet_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_far_feet_xy",
+            weight=-0.8,
+            params={"far_feet_threshold": 0.38},
+            tags=["penalty_curriculum"],
+        ),
         "penalty_feet_ori": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_feet_ori",
             weight=-5.0,
@@ -402,7 +489,7 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
         ),
         "alive": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:alive",
-            weight=15.0,
+            weight=4.0,
             params={},
         ),
     },

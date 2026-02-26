@@ -280,38 +280,20 @@ def setup_simulation_environment(
 
 
 def close_simulation_app(simulation_app):
-    """Close simulation app with workarounds for known issues.
+    """Close simulation app and force-exit for IsaacSim.
 
-    Parameters
-    ----------
-    simulation_app : Any
-        The simulation app instance returned by init_sim_imports().
-        Can be None for simulators that don't have an app (e.g., IsaacGym).
+    IsaacSim's simulation_app.close() and close_stage() both hang indefinitely
+    due to background threads (omni.syntheticdata etc.).  The only reliable way
+    to release GPU/RAM is to kill the process with os._exit().
     """
+    import gc  # noqa: PLC0415
+    import os as _os  # noqa: PLC0415
+
     if simulation_app is not None and get_simulator_type() == SimulatorType.ISAACSIM:
-        logger.info("Shutting down simulation app...")
-        try:
-            # Work-around for IsaacLab hanging headless.
-            # Patch the close_stage method to avoid hanging
-            import omni.usd  # noqa: PLC0415
-
-            context = omni.usd.get_context()
-            context_class = context.__class__
-
-            # Replace with a no-op version
-            def noop_close_stage(self, *args, **kwargs):
-                logger.info("Skipping close_stage() to avoid hanging")
-                return True
-
-            # Apply the patch
-            context_class.close_stage = noop_close_stage
-            logger.info("Successfully patched close_stage method")
-        except Exception as e:
-            logger.warning(f"Could not patch close_stage method: {e}")
-
-        # Now close the app
-        simulation_app.close(wait_for_replicator=False)
-        logger.info("Simulation app closed.")
+        logger.info("Shutting down IsaacSim: releasing GPU memory and force-exiting process.")
+        gc.collect()
+        torch.cuda.empty_cache()
+        _os._exit(0)
     else:
         logger.info("Simulation app closed.")
 

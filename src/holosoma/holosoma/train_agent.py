@@ -299,15 +299,24 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         if is_distributed:
             logger.info("Shutting down distributed processes...")
             dist.destroy_process_group()
+
+        # Explicitly release env/algo GPU tensors before closing the sim app
+        logger.info("Releasing training resources...")
+        del algo
+        del env
+        import gc
+
+        gc.collect()
+        torch.cuda.empty_cache()
     except Exception as e:
         tb_str = traceback.format_exc()
         logger.error(f"Exception occurred during training: {e}\n{tb_str}")
-        sys.exit(1)  # manually set exit code, not possible via isaacsim app.close()
+        if auto_close:
+            close_simulation_app(simulation_app)
+        os._exit(1)
     finally:
         if auto_close:
             close_simulation_app(simulation_app)
-
-    logger.info("Training shutdown complete.")
 
 
 def main() -> None:
