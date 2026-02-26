@@ -5,16 +5,16 @@
 <robot
   name="K1">
 
-  <!-- <mujoco>
+  <!--mujoco>
     <compiler meshdir="meshes/" balanceinertia="true" discardvisual="false"/>
-  </mujoco> -->
+  </mujoco-->
   <!-- for convert to mujoco -->
-  <!-- <link name="world"/>
+  <!--link name="world"/>
   <joint name="world_joint" type="floating">
     <origin xyz="0 0 0"/>
     <parent link="world"/>
     <child link="Trunk"/>
-  </joint> -->
+  </joint-->
 
   <link
     name="Trunk">
@@ -140,17 +140,17 @@
     name="Head_2">
     <inertial>
       <origin
-        xyz="0.011042 -0.00092871 0.080698"
+        xyz="0.006640 0.000764 0.072506"
         rpy="0 0 0" />
       <mass
-        value="0.70" />
+        value="0.781574" />
       <inertia
-        ixx="0.005927"
-        ixy="-0.000012"
-        ixz="0.000664"
-        iyy="0.005776"
-        iyz="-0.000033"
-        izz="0.001807" />
+        ixx="0.006825"
+        ixy="-0.000002"
+        ixz="0.000481"
+        iyy="0.005840"
+        iyz="0.000048"
+        izz="0.002900" />
     </inertial>
     <visual>
       <origin
@@ -158,7 +158,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Head_2.STL" />
+          filename="meshes/Head_2_ZED.STL" />
       </geometry>
       <material
         name="">
@@ -172,7 +172,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Head_2.STL" />
+          filename="meshes/Head_2_ZED.STL" />
       </geometry>
     </collision>
   </link>
