@@ -45,13 +45,13 @@ k1_22dof_agile_command = CommandManagerCfg(
         "locomotion_gait": CommandTermCfg(
             func="holosoma.managers.command.terms.locomotion:LocomotionGait",
             params={
-                # Keep cadence high and mostly constant (about 2.17 Hz gait cycles ~= 4.35 steps/s total).
-                "gait_period": 0.46,
+                # Base cadence ~1.82 Hz; scales up with speed for smooth low-to-high velocity transitions.
+                "gait_period": 0.55,
                 "gait_period_randomization_width": 0.05,
-                "adaptive_gait_freq_from_lin_speed": 0.0,
-                "adaptive_gait_freq_from_yaw_speed": 0.0,
-                "adaptive_gait_freq_min": 2.0,
-                "adaptive_gait_freq_max": 2.3,
+                "adaptive_gait_freq_from_lin_speed": 0.5,
+                "adaptive_gait_freq_from_yaw_speed": 0.2,
+                "adaptive_gait_freq_min": 1.2,
+                "adaptive_gait_freq_max": 2.5,
             },
         ),
         "locomotion_command": CommandTermCfg(

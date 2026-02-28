@@ -339,9 +339,9 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
     terms={
         "tracking_lin_vel": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:tracking_lin_vel",
-            weight=6.0,
+            weight=8.0,
             params={
-                "tracking_sigma": 0.20,
+                "tracking_sigma": 0.35,
                 "push_compensation_tau_s": 0.18,
                 "push_compensation_cutoff_s": 0.45,
                 "push_compensation_max_speed": 1.2,
@@ -350,8 +350,8 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
         ),
         "tracking_ang_vel": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:tracking_ang_vel",
-            weight=2.0,
-            params={"tracking_sigma": 0.20},
+            weight=2.5,
+            params={"tracking_sigma": 0.30},
         ),
         "penalty_ang_vel_xy": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_ang_vel_xy",
@@ -373,7 +373,7 @@ k1_22dof_agile_loco_fast_sac = RewardManagerCfg(
         ),
         "penalty_action_rate": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
-            weight=-0.3,
+            weight=-0.6,
             params={},
             tags=["penalty_curriculum"],
         ),
