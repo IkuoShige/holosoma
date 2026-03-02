@@ -22,6 +22,17 @@ if TYPE_CHECKING:
     from holosoma.simulator.isaacsim.isaacsim import IsaacSim
 
 
+def _supports_warp_randomization(simulator: Any) -> bool:
+    """Check if the simulator supports warp-based domain randomization."""
+    # MuJoCo Warp backend
+    if getattr(getattr(simulator, "simulator_config", None), "mujoco_backend", None) == MujocoBackend.WARP:
+        return True
+    # MjLab (also uses mujoco-warp under the hood with a backend adapter)
+    if simulator.__class__.__name__ == "MjLab" and hasattr(simulator, "backend"):
+        return True
+    return False
+
+
 def _ensure_env_ids_tensor(env: Any, env_ids: torch.Tensor | Sequence[int] | None) -> torch.Tensor:
     """Convert environment indices to a tensor on the correct device."""
     if env_ids is None:
@@ -677,7 +688,7 @@ def randomize_base_com_startup(
             distribution="uniform",
             num_envs=simulator.training_config.num_envs,
         )
-    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
+    elif _supports_warp_randomization(simulator):
         from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
 
         # convert xyz to 012
@@ -806,7 +817,7 @@ def randomize_mass_startup(
                 (added_mass_range[0], added_mass_range[1]),
                 operation="add",
             )
-    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
+    elif _supports_warp_randomization(simulator):
         from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
 
         # randomize over the range (scale and/or shift)
@@ -917,7 +928,7 @@ def randomize_friction_startup(
             num_buckets=num_buckets,
         )
 
-    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
+    elif _supports_warp_randomization(simulator):
         from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
 
         assert len(friction_range) == 2, f"friction_range must have exactly 2 elements, got {len(friction_range)}"

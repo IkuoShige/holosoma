@@ -1011,3 +1011,8 @@ class FastSACAgent(BaseAlgo):
             # Actions are already scaled by the actor
             actions = self.actor(normalized_obs)[0]
             obs, _, _, _ = self.env.step(actions)
+
+        # Flush any in-progress video recording
+        simulator = self.unwrapped_env.simulator
+        if hasattr(simulator, "video_recorder") and simulator.video_recorder is not None:
+            simulator.video_recorder.stop_recording()

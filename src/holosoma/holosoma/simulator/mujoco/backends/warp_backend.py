@@ -281,8 +281,8 @@ class WarpBackend(IMujocoBackend):
             Contact force history buffer [num_envs, history_len, num_bodies, 3]
         """
         # cfrc_ext is already computed by Warp: [num_envs, num_bodies, 6]
-        # Take first 3 components (forces, ignore torques)
-        forces = self.cfrc_t[..., :3]  # [num_envs, num_bodies, 3]
+        # cfrc_ext layout is [torque(3), force(3)] — take last 3 components
+        forces = self.cfrc_t[..., 3:6]  # [num_envs, num_bodies, 3]
 
         # Update history: shift old values right, add current at position 0
         contact_history_tensor[:] = torch.cat([forces.unsqueeze(1), contact_history_tensor[:, :-1]], dim=1)

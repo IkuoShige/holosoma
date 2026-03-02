@@ -134,11 +134,13 @@ def resolve_entity_ids(mj_model: mujoco.MjModel, names: list[str], entity_type: 
     for name in names:
         idx = mujoco.mj_name2id(mj_model, obj_type, name)
         if idx == -1:
-            # Try prefixed name
-            idx_prefixed = mujoco.mj_name2id(mj_model, obj_type, "robot_" + name)
-            if idx_prefixed == -1:
+            # Try common prefixes used by different simulators
+            for prefix in ("robot_", "robot/"):
+                idx = mujoco.mj_name2id(mj_model, obj_type, prefix + name)
+                if idx != -1:
+                    break
+            if idx == -1:
                 raise ValueError(f"Entity '{name}' of type '{entity_type}' not found in model.")
-            idx = idx_prefixed
         indices.append(idx)
 
     return indices

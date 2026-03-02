@@ -34,7 +34,7 @@ if simulator_type == SimulatorType.ISAACGYM:
         draw_line,
         draw_sphere,
     )
-elif simulator_type == SimulatorType.MUJOCO:
+elif simulator_type in (SimulatorType.MUJOCO, SimulatorType.MJLAB):
     # Import MuJoCo drawing functions (including logging stubs)
     from holosoma.utils.adapters.mujoco_draw_adapter import (
         clear_lines,

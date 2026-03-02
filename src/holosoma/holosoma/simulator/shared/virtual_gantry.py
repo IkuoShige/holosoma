@@ -131,7 +131,7 @@ class VirtualGantry:
             logger.warning("Virtual Gantry untested in IsaacSim")
             self._apply_force_impl = self._apply_force_isaacsim
             self._clear_forces_impl = self._clear_forces_isaacsim
-        elif simtype is SimulatorType.MUJOCO:
+        elif simtype in (SimulatorType.MUJOCO, SimulatorType.MJLAB):
             self._apply_force_impl = self._apply_force_mujoco
             self._clear_forces_impl = self._clear_forces_mujoco
         else:
