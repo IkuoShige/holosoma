@@ -1,10 +1,10 @@
 # Holosoma
 
-Holosoma (Greek: "whole-body") is a comprehensive humanoid robotics framework for training and deploying reinforcement learning policies on humanoid robots, as well as motion retargeting. Supports locomotion (velocity tracking) and whole-body tracking tasks across multiple simulators (IsaacGym, IsaacSim, MJWarp, MuJoCo) with algorithms like PPO and FastSAC.
+Holosoma (Greek: "whole-body") is a comprehensive humanoid robotics framework for training and deploying reinforcement learning policies on humanoid robots, as well as motion retargeting. Supports locomotion (velocity tracking) and whole-body tracking tasks across multiple simulators (IsaacGym, IsaacSim, MJWarp, MjLab, MuJoCo) with algorithms like PPO and FastSAC.
 
 ## Features
 
-- **Multi-simulator support**: IsaacGym, IsaacSim, MuJoCo Warp (MJWarp), and MuJoCo (inference only)
+- **Multi-simulator support**: IsaacGym, IsaacSim, MuJoCo Warp (MJWarp), MjLab, and MuJoCo (inference only)
 - **Multiple RL algorithms**: PPO and FastSAC
 - **Robot support**: Unitree G1 and Booster T1 humanoids
 - **Task types**: Locomotion (velocity tracking) and whole-body tracking
@@ -43,6 +43,9 @@ bash scripts/setup_isaacsim.sh
 
 # For MJWarp training and MuJoCo simulation (inference)
 bash scripts/setup_mujoco.sh
+
+# For MjLab training
+bash scripts/setup_mjlab.sh
 
 # For inference/deployment
 bash scripts/setup_inference.sh

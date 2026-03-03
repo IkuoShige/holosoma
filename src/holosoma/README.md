@@ -4,7 +4,7 @@ Core training framework for humanoid robot reinforcement learning with support f
 
 | **Category** | **Supported Options** |
 |-------------|----------------------|
-| **Simulators** | IsaacGym, IsaacSim, MJWarp (training) \| Mujoco (evaluation) |
+| **Simulators** | IsaacGym, IsaacSim, MJWarp, MjLab (training) \| Mujoco (evaluation) |
 | **Algorithms** | PPO, FastSAC |
 | **Robots** | Unitree G1, Booster T1 |
 
@@ -79,6 +79,45 @@ python src/holosoma/holosoma/train_agent.py \
 > - These examples use `--training.num-envs=4096`, but you may need to adjust this value based on your hardware.
 > - When training T1 with PPO on mixed terrain, use `--terrain.terrain-term.scale-factor=0.5` to avoid training instabilities.
 
+
+### MjLab Training for Locomotion (Velocity Tracking)
+
+Train using the MjLab simulator. MjLab uses `fps=500` with `decimation=10` (vs MJWarp's `fps=200` with `decimation=4`) and requires the `mjlab` dependency (installed via `bash scripts/setup_mjlab.sh`).
+
+```bash
+# G1 with FastSAC
+source scripts/source_mjlab_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-29dof-fast-sac \
+    simulator:mjlab \
+    logger:wandb
+
+# G1 with PPO
+source scripts/source_mjlab_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-29dof \
+    simulator:mjlab \
+    logger:wandb
+
+# T1 with FastSAC
+source scripts/source_mjlab_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:t1-29dof-fast-sac \
+    simulator:mjlab \
+    logger:wandb
+
+# T1 with PPO
+source scripts/source_mjlab_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:t1-29dof \
+    simulator:mjlab \
+    logger:wandb \
+    --terrain.terrain-term.scale-factor=0.5  # required to avoid training instabilities
+```
+
+> **Note:**
+> - When training T1 with PPO on mixed terrain, use `--terrain.terrain-term.scale-factor=0.5` to avoid training instabilities.
+> - On headless servers, set `export MUJOCO_GL=egl` before training. See [MuJoCo docs](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl).
 
 ### Whole-Body Tracking
 
@@ -194,7 +233,7 @@ Video recording is **enabled by default** when using `logger:wandb`. Videos are 
 If training fails on headless servers with display/rendering errors (e.g., `GLXBadFBConfig`, `eglInitialize failed`, `GLFW initialization failed`):
 
 - **IsaacSim:** Disable video with `--logger.video.enabled False`, or force EGL with `DISPLAY= python ...`, or use virtual display with `xvfb-run -a python ...`
-- **MJWarp/MuJoCo:** Set environment variable before training: `export MUJOCO_GL=egl`. See [MuJoCo docs](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl)
+- **MJWarp/MjLab/MuJoCo:** Set environment variable before training: `export MUJOCO_GL=egl`. See [MuJoCo docs](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl)
 - **IsaacGym:** Usually works in headless environments. If issues occur, disable video with `--logger.video.enabled False`
 
 ### Terrain
