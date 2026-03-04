@@ -63,7 +63,7 @@ k1_22dof_agile_command = CommandManagerCfg(
                     "ang_vel_yaw": [-1.5, 1.5],
                     "heading": [-3.14, 3.14],
                 },
-                "stand_prob": 0.1,
+                "stand_prob": 0.2,
                 # High-speed soccer-like cases should emphasize forward + yaw while keeping vy available.
                 "combined_motion_prob": 0.3,
                 "combined_lin_vel_x_range": [1.4, 2.5],

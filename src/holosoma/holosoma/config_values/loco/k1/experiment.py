@@ -86,7 +86,7 @@ k1_22dof_agile_fast_sac = ExperimentConfig(
             algo.fast_sac.config,
             num_learning_iterations=100000,
             use_symmetry=True,
-            target_entropy_ratio=0.25,
+            target_entropy_ratio=0.18,
             alpha_init=0.01,
         ),
     ),

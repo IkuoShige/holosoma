@@ -112,6 +112,17 @@ def penalty_action_rate(env: LeggedRobotLocomotionManager) -> torch.Tensor:
     return torch.sum(torch.square(prev_actions - actions), dim=1)
 
 
+def penalty_action_rate_l1(env: LeggedRobotLocomotionManager) -> torch.Tensor:
+    """Penalize changes in actions using L1 norm.
+
+    Unlike L2, L1 provides constant gradient near zero, effectively
+    suppressing small oscillations that L2 ignores.
+    """
+    actions = env.action_manager.action
+    prev_actions = env.action_manager.prev_action
+    return torch.sum(torch.abs(prev_actions - actions), dim=1)
+
+
 def penalty_orientation(env: LeggedRobotLocomotionManager) -> torch.Tensor:
     """Penalize non-flat base orientation.
 
@@ -188,7 +199,11 @@ def _get_push_velocity_compensation_xy(
         return torch.zeros((env.num_envs, 2), dtype=torch.float32, device=env.device)
 
     push_world_xy = env.record_push_robot_vel_buf
-    if not isinstance(push_world_xy, torch.Tensor) or push_world_xy.shape[0] != env.num_envs or push_world_xy.shape[1] < 2:
+    if (
+        not isinstance(push_world_xy, torch.Tensor)
+        or push_world_xy.shape[0] != env.num_envs
+        or push_world_xy.shape[1] < 2
+    ):
         return torch.zeros((env.num_envs, 2), dtype=torch.float32, device=env.device)
 
     # Push impulses are injected as world-frame base linear velocities in XY.
@@ -469,6 +484,78 @@ def feet_phase(
     total_error = error_left + error_right
 
     return torch.exp(-total_error / tracking_sigma)
+
+
+def feet_phase_gated(
+    env,
+    swing_height: float = 0.08,
+    tracking_sigma: float = 0.25,
+    dynamic_swing_height_from_lin_speed: float = 0.0,
+    dynamic_swing_height_from_yaw_speed: float = 0.0,
+    dynamic_swing_height_from_gait_freq: float = 0.0,
+    dynamic_swing_height_min: float | None = None,
+    dynamic_swing_height_max: float | None = None,
+    cmd_speed_gate_threshold: float = 0.15,
+    cmd_speed_gate_ramp: float = 0.15,
+) -> torch.Tensor:
+    """Reward for tracking foot height, gated by command speed.
+
+    When commanded speed is near zero, the reward is clamped to 1.0 so
+    the agent has no incentive to keep stepping in place.  As commanded
+    speed ramps above *cmd_speed_gate_threshold*, the normal feet_phase
+    reward activates smoothly over *cmd_speed_gate_ramp*.
+
+    All feet_phase parameters are forwarded unchanged.
+    """
+    base_reward = feet_phase(
+        env,
+        swing_height=swing_height,
+        tracking_sigma=tracking_sigma,
+        dynamic_swing_height_from_lin_speed=dynamic_swing_height_from_lin_speed,
+        dynamic_swing_height_from_yaw_speed=dynamic_swing_height_from_yaw_speed,
+        dynamic_swing_height_from_gait_freq=dynamic_swing_height_from_gait_freq,
+        dynamic_swing_height_min=dynamic_swing_height_min,
+        dynamic_swing_height_max=dynamic_swing_height_max,
+    )
+
+    commands = env.command_manager.commands
+    cmd_speed = torch.linalg.norm(commands[:, :2], dim=1) + 0.5 * torch.abs(commands[:, 2])
+
+    gate = torch.clamp((cmd_speed - cmd_speed_gate_threshold) / max(cmd_speed_gate_ramp, 1e-6), 0.0, 1.0)
+
+    return gate * base_reward + (1.0 - gate) * 1.0
+
+
+def reward_standstill(
+    env,
+    cmd_speed_threshold: float = 0.15,
+    vel_sigma: float = 0.25,
+    dof_vel_sigma: float = 4.0,
+) -> torch.Tensor:
+    """Reward low base and joint velocities when command is near zero.
+
+    Active only when commanded speed < *cmd_speed_threshold*.
+    Returns 0 when the robot is commanded to move.
+
+    The reward is the product of two exp-decay terms:
+    - base velocity error (linear XY + angular yaw)
+    - joint velocity magnitude
+    """
+    commands = env.command_manager.commands
+    cmd_speed = torch.linalg.norm(commands[:, :2], dim=1) + 0.5 * torch.abs(commands[:, 2])
+    standstill_mask = cmd_speed < cmd_speed_threshold
+
+    base_lin_vel = get_base_lin_vel(env)[:, :2]
+    base_ang_vel = get_base_ang_vel(env)[:, 2]
+    vel_error = torch.sum(torch.square(base_lin_vel), dim=1) + torch.square(base_ang_vel)
+    vel_reward = torch.exp(-vel_error / vel_sigma)
+
+    dof_vel = env.simulator.dof_vel
+    dof_vel_error = torch.sum(torch.square(dof_vel), dim=1)
+    dof_vel_reward = torch.exp(-dof_vel_error / dof_vel_sigma)
+
+    reward = vel_reward * dof_vel_reward
+    return torch.where(standstill_mask, reward, torch.zeros_like(reward))
 
 
 def stride_pitch_coupling(
