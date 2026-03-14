@@ -412,17 +412,18 @@ class MuJoCo(BaseSimulator):
         assert self.root_model
         all_joint_names = [self.root_model.joint(i).name for i in range(self.root_model.njnt)]
 
-        # Filter out freejoints
-        # TODO: make more robust/not hardcoded names, also handle objects
+        # Filter out freejoints by type (robust across all robot models)
         prefix = self.scene_manager.robot_prefix
         exclude_names = [
-            f"{prefix}freejoint",
-            f"{prefix}floating_base_joint",
             f"{prefix}",  # keep named joints only
             "",  # keep named joints only
         ]
 
-        robot_joint_names = [n for n in all_joint_names if n not in exclude_names]
+        robot_joint_names = [
+            n
+            for i, n in enumerate(all_joint_names)
+            if n not in exclude_names and self.root_model.jnt_type[i] != mujoco.mjtJoint.mjJNT_FREE
+        ]
 
         # Build name maps first
         self._build_name_maps()
@@ -456,16 +457,32 @@ class MuJoCo(BaseSimulator):
         """
         logger.info("=== Setting up robot joint addressing ===")
 
-        # Find the named freejoint for robot root control (use prefixed name)
+        # Find the freejoint for robot root control
         assert self.root_model
-        has_freejoint = True
-        freejoint_name = self._get_prefixed_name("floating_base_joint")
-        self.robot_freejoint_id = mujoco.mj_name2id(self.root_model, mujoco.mjtObj.mjOBJ_JOINT, freejoint_name)
+        has_freejoint = False
+        self.robot_freejoint_id = -1
 
-        if self.robot_freejoint_id == -1:
-            logger.warning(f"Robot freejoint '{freejoint_name}' not found in model")
+        # Search by well-known names first
+        for name in ["floating_base_joint", "world_joint", "freejoint"]:
+            prefixed = self._get_prefixed_name(name)
+            jid = mujoco.mj_name2id(self.root_model, mujoco.mjtObj.mjOBJ_JOINT, prefixed)
+            if jid != -1 and self.root_model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_FREE:
+                self.robot_freejoint_id = jid
+                has_freejoint = True
+                break
+
+        # Fallback: find any freejoint by type
+        if not has_freejoint:
+            for i in range(self.root_model.njnt):
+                if self.root_model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE:
+                    self.robot_freejoint_id = i
+                    has_freejoint = True
+                    logger.info(f"Found freejoint by type scan: joint {i} ('{self.root_model.joint(i).name}')")
+                    break
+
+        if not has_freejoint:
+            logger.warning("No freejoint found in model")
             self.robot_freejoint_id = 0
-            has_freejoint = False
 
         # Validate it's actually a freejoint
         if has_freejoint and self.root_model.jnt_type[self.robot_freejoint_id] != mujoco.mjtJoint.mjJNT_FREE:
