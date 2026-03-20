@@ -16,6 +16,14 @@ if TYPE_CHECKING:
     from holosoma.envs.ball_play.ball_dribble_task import BallDribbleTask
 
 
+def _get_dribble_commands(env: BallDribbleTask) -> torch.Tensor:
+    """Get dribble command tensor from DribbleCommand term."""
+    state = env.command_manager.get_state("dribble_command")
+    if state is not None and hasattr(state, "commands") and state.commands is not None:
+        return state.commands
+    return torch.zeros(env.num_envs, 2, device=env.device)
+
+
 # =============================================================================
 # Kick Task Rewards
 # =============================================================================
@@ -182,7 +190,7 @@ def ball_velocity_tracking(
         Reward tensor [num_envs]
     """
     actual_vel = env.ball_vel[:, :2]
-    target_vel = env.command_manager.commands[:, :2]
+    target_vel = _get_dribble_commands(env)
 
     actual_speed = torch.norm(actual_vel, dim=-1)
     target_speed = torch.norm(target_vel, dim=-1)
@@ -219,7 +227,7 @@ def ball_distance_penalty(
     robot_pos_xy = env.simulator.robot_root_states[:, :2]
     ball_pos_xy = env.ball_pos[:, :2]
 
-    commands = env.command_manager.commands[:, :2]
+    commands = _get_dribble_commands(env)
     command_norm = torch.norm(commands, dim=-1, keepdim=True)
     normed_dir = commands / (command_norm + 1e-8)
     target_pos = ball_pos_xy - 0.175 * normed_dir

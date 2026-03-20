@@ -53,6 +53,18 @@ def kick_target_direction(env: BallKickTask) -> torch.Tensor:
     return env.kick_target_dir
 
 
+def _get_dribble_commands(env: BallDribbleTask) -> torch.Tensor:
+    """Get dribble command tensor from DribbleCommand term.
+
+    Returns:
+        Tensor of shape [num_envs, 2] (vx, vy in world frame)
+    """
+    state = env.command_manager.get_state("dribble_command")
+    if state is not None and hasattr(state, "commands") and state.commands is not None:
+        return state.commands
+    return torch.zeros(env.num_envs, 2, device=env.device)
+
+
 def dribble_target_direction_local(env: BallDribbleTask) -> torch.Tensor:
     """Dribble target direction in robot local frame.
 
@@ -62,8 +74,8 @@ def dribble_target_direction_local(env: BallDribbleTask) -> torch.Tensor:
         Tensor of shape [num_envs, 2]
     """
     base_quat = env.base_quat
+    commands = _get_dribble_commands(env)
     world_dir = torch.zeros(env.num_envs, 3, device=env.device)
-    commands = env.command_manager.commands
     world_dir[:, 0] = commands[:, 0]
     world_dir[:, 1] = commands[:, 1]
     local_dir = quat_rotate_inverse(base_quat, world_dir, w_last=True)
