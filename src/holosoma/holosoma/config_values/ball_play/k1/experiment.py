@@ -32,10 +32,24 @@ _k1_22dof_with_ball = replace(
     ),
 )
 
+# PPO config with symmetry disabled and min_noise_std set
+_ball_play_algo = replace(
+    algo.ppo,
+    config=replace(
+        algo.ppo.config,
+        num_learning_iterations=25000,
+        use_symmetry=False,
+        module_dict=replace(
+            algo.ppo.config.module_dict,
+            actor=replace(algo.ppo.config.module_dict.actor, min_noise_std=0.01),
+        ),
+    ),
+)
+
 k1_22dof_ball_kick = ExperimentConfig(
     env_class="holosoma.envs.ball_play.ball_kick_task.BallKickTask",
     training=TrainingConfig(project="hv-k1-ball-play", name="k1_22dof_ball_kick"),
-    algo=replace(algo.ppo, config=replace(algo.ppo.config, num_learning_iterations=25000)),
+    algo=_ball_play_algo,
     simulator=simulator.isaacsim,
     robot=_k1_22dof_with_ball,
     terrain=terrain.terrain_locomotion_plane,
@@ -51,7 +65,7 @@ k1_22dof_ball_kick = ExperimentConfig(
 k1_22dof_ball_dribble = ExperimentConfig(
     env_class="holosoma.envs.ball_play.ball_dribble_task.BallDribbleTask",
     training=TrainingConfig(project="hv-k1-ball-play", name="k1_22dof_ball_dribble"),
-    algo=replace(algo.ppo, config=replace(algo.ppo.config, num_learning_iterations=25000)),
+    algo=_ball_play_algo,
     simulator=simulator.isaacsim,
     robot=_k1_22dof_with_ball,
     terrain=terrain.terrain_locomotion_plane,

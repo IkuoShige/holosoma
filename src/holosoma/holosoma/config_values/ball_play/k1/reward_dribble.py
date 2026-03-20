@@ -26,10 +26,9 @@ k1_22dof_ball_dribble = RewardManagerCfg(
             func="holosoma.managers.reward.terms.locomotion:alive",
             weight=0.25,
         ),
-        "base_height": RewardTermCfg(
-            func="holosoma.managers.reward.terms.locomotion:base_height",
-            weight=-20.0,
-            params={"desired_base_height": 0.54},
+        "penalty_orientation": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_orientation",
+            weight=-10.0,
         ),
         "penalty_action_rate": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",

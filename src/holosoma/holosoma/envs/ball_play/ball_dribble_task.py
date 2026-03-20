@@ -74,11 +74,9 @@ class BallDribbleTask(LeggedRobotLocomotionManager):
 
     def _update_ball_state(self):
         """Fetch ball state from simulator and update derived quantities."""
-        # Get ball state
-        ball_states = self.simulator.get_actor_states(
-            ["object"],
-            torch.arange(self.num_envs, device=self.device),
-        )
+        # Get ball state via simulator's object state API
+        all_env_ids = torch.arange(self.num_envs, device=self.device)
+        ball_states = self.simulator._get_object_states("object", all_env_ids)
         self.ball_pos[:] = ball_states[:, :3]
         self.ball_vel[:] = ball_states[:, 7:10]
 
@@ -176,7 +174,7 @@ class BallDribbleTask(LeggedRobotLocomotionManager):
             -0.5, 0.5, (len(env_ids), 1), device=str(self.device)
         ).squeeze(-1)
 
-        self.simulator.set_actor_states(["object"], env_ids, new_states)
+        self.simulator._write_object_state_unified("object", new_states, env_ids)
 
     def _reset_buffers_callback(self, env_ids, target_buf=None):
         super()._reset_buffers_callback(env_ids, target_buf)

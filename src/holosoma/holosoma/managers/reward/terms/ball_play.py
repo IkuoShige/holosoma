@@ -68,7 +68,8 @@ def ball_acceleration_toward_target(
     current_vel = env.ball_vel[:, :2]
     prev_vel = env.last_ball_vel[:, :2]
 
-    ball_accel = (current_vel - prev_vel) / env.dt
+    dt = max(env.dt, 1e-6)
+    ball_accel = (current_vel - prev_vel) / dt
     target_dir = env.kick_target_dir
 
     accel_toward = torch.sum(ball_accel * target_dir, dim=-1)
