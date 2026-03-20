@@ -14,6 +14,10 @@ from holosoma.config_values.wbt.g1.experiment import (
     g1_29dof_wbt_fast_sac_w_object,
     g1_29dof_wbt_w_object,
 )
+from holosoma.config_values.ball_play.k1.experiment import (
+    k1_22dof_ball_kick,
+    k1_22dof_ball_dribble,
+)
 from typing_extensions import Annotated
 
 DEFAULTS = {
@@ -29,6 +33,8 @@ DEFAULTS = {
     "g1_29dof_wbt_w_object": g1_29dof_wbt_w_object,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac,
     "g1_29dof_wbt_fast_sac_w_object": g1_29dof_wbt_fast_sac_w_object,
+    "k1_22dof_ball_kick": k1_22dof_ball_kick,
+    "k1_22dof_ball_dribble": k1_22dof_ball_dribble,
 }
 
 AnnotatedExperimentConfig = Annotated[
