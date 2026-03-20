@@ -78,4 +78,20 @@ k1_22dof_ball_dribble = ExperimentConfig(
     reward=reward_dribble.k1_22dof_ball_dribble,
 )
 
-__all__ = ["k1_22dof_ball_kick", "k1_22dof_ball_dribble"]
+# MuJoCo Warp variants
+k1_22dof_ball_kick_mjwarp = replace(
+    k1_22dof_ball_kick,
+    simulator=simulator.mjwarp,
+)
+
+k1_22dof_ball_dribble_mjwarp = replace(
+    k1_22dof_ball_dribble,
+    simulator=simulator.mjwarp,
+)
+
+__all__ = [
+    "k1_22dof_ball_kick",
+    "k1_22dof_ball_dribble",
+    "k1_22dof_ball_kick_mjwarp",
+    "k1_22dof_ball_dribble_mjwarp",
+]

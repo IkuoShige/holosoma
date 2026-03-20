@@ -401,6 +401,13 @@ class MuJoCo(BaseSimulator):
             terrain_state, self.robot_config, xml_filter=self.simulator_config.robot_mjcf_filter
         )
 
+        # Add ball object if configured
+        if self.robot_config.object.object_urdf_path:
+            self.scene_manager.add_ball(radius=0.075, mass=0.2)
+            self._has_ball = True
+        else:
+            self._has_ball = False
+
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.
 
@@ -676,8 +683,9 @@ class MuJoCo(BaseSimulator):
 
         self._set_robot_initial_state()
 
-        # Setup ObjectRegistry for robot-only (scenes not yet implemented)
-        self.object_registry.setup_ranges(self.num_envs, robot_count=1, scene_count=0, individual_count=0)
+        # Setup ObjectRegistry
+        individual_count = 1 if getattr(self, "_has_ball", False) else 0
+        self.object_registry.setup_ranges(self.num_envs, robot_count=1, scene_count=0, individual_count=individual_count)
 
         # Register robot with initial pose
         # TODO: use robot model/data rather than config here?
@@ -685,6 +693,15 @@ class MuJoCo(BaseSimulator):
         robot_poses[:, :3] = torch.tensor(self.robot_config.init_state.pos, device=self.sim_device)
         robot_poses[:, 3:7] = torch.tensor(self.robot_config.init_state.rot, device=self.sim_device)  # [x,y,z,w]
         self.object_registry.register_object("robot", ObjectType.ROBOT, 0, robot_poses)
+
+        # Register ball if present
+        if getattr(self, "_has_ball", False):
+            ball_poses = torch.zeros(self.num_envs, 7, device=self.sim_device)
+            ball_poses[:, 2] = 0.075  # ball radius
+            ball_poses[:, 6] = 1.0  # identity quat w (xyzw format)
+            self.object_registry.register_object("object", ObjectType.INDIVIDUAL, 0, ball_poses)
+            self._setup_ball_addressing()
+
         self.object_registry.finalize_registration()
 
         # Calculate indices for robot freejoint components
@@ -1056,6 +1073,116 @@ class MuJoCo(BaseSimulator):
 
         if write_updates:
             mujoco.mj_forward(self.root_model, self.root_data)
+
+    # ------------------------------------------------------------------
+    # Ball object support
+    # ------------------------------------------------------------------
+
+    def _setup_ball_addressing(self) -> None:
+        """Find ball freejoint and store qpos/qvel addresses."""
+        ball_name = getattr(self.scene_manager, "ball_name", "ball")
+        ball_body_id = mujoco.mj_name2id(
+            self.root_model, mujoco.mjtObj.mjOBJ_BODY, ball_name
+        )
+        if ball_body_id == -1:
+            raise RuntimeError(f"Ball body '{ball_name}' not found in MuJoCo model")
+        self._ball_body_id = ball_body_id
+
+        # Find ball freejoint
+        ball_joint_name = f"{ball_name}_freejoint"
+        ball_joint_id = mujoco.mj_name2id(
+            self.root_model, mujoco.mjtObj.mjOBJ_JOINT, ball_joint_name
+        )
+        if ball_joint_id == -1:
+            raise RuntimeError(f"Ball freejoint '{ball_joint_name}' not found")
+        self._ball_qpos_addr = self.root_model.jnt_qposadr[ball_joint_id]
+        self._ball_qvel_addr = self.root_model.jnt_dofadr[ball_joint_id]
+        logger.info(
+            f"Ball addressing: body_id={ball_body_id}, "
+            f"qpos_addr={self._ball_qpos_addr}, qvel_addr={self._ball_qvel_addr}"
+        )
+
+    def _get_object_states(self, obj_name: str, env_ids: torch.Tensor) -> torch.Tensor:
+        """Get object states for named object.
+
+        Parameters
+        ----------
+        obj_name : str
+            Object name ("robot" or "object" for ball)
+        env_ids : torch.Tensor
+            Environment IDs
+
+        Returns
+        -------
+        torch.Tensor
+            States [len(env_ids), 13] in holosoma format [x,y,z,qx,qy,qz,qw,vx,vy,vz,wx,wy,wz]
+        """
+        if obj_name == "robot":
+            return self.robot_root_states[env_ids]
+
+        if obj_name == "object" and getattr(self, "_has_ball", False):
+            body_id = self._ball_body_id
+            pos = torch.from_numpy(
+                self.root_data.xpos[body_id].copy()
+            ).float().to(self.sim_device)
+            quat_mj = self.root_data.xquat[body_id]
+            quat_h = torch.tensor(
+                [quat_mj[1], quat_mj[2], quat_mj[3], quat_mj[0]],
+                device=self.sim_device, dtype=torch.float32,
+            )
+            ang_vel = torch.from_numpy(
+                self.root_data.cvel[body_id, 0:3].copy()
+            ).float().to(self.sim_device)
+            lin_vel = torch.from_numpy(
+                self.root_data.cvel[body_id, 3:6].copy()
+            ).float().to(self.sim_device)
+            # COM velocity correction
+            offset = torch.from_numpy(
+                (self.root_data.xpos[body_id] - self.root_data.subtree_com[body_id]).copy()
+            ).float().to(self.sim_device)
+            lin_world = lin_vel + torch.cross(ang_vel, offset)
+
+            state = torch.cat([pos, quat_h, lin_world, ang_vel])  # [13]
+            return state.unsqueeze(0).expand(len(env_ids), -1)
+
+        raise ValueError(f"Unknown object '{obj_name}'")
+
+    def _write_object_state_unified(
+        self, obj_name: str, states: torch.Tensor, env_ids: torch.Tensor
+    ) -> None:
+        """Write object states for named object.
+
+        Parameters
+        ----------
+        obj_name : str
+            Object name ("robot" or "object" for ball)
+        states : torch.Tensor
+            States [len(env_ids), 13] in holosoma format
+        env_ids : torch.Tensor
+            Environment IDs
+        """
+        if obj_name == "object" and getattr(self, "_has_ball", False):
+            # Use first env state (classic backend = single env)
+            s = states[0].detach().cpu().numpy()
+            pos = s[:3]
+            quat_h = s[3:7]  # [x,y,z,w]
+            lin_vel = s[7:10]
+            ang_vel = s[10:13]
+
+            quat_mj = np.array([quat_h[3], quat_h[0], quat_h[1], quat_h[2]])
+
+            qa = self._ball_qpos_addr
+            self.root_data.qpos[qa:qa + 3] = pos
+            self.root_data.qpos[qa + 3:qa + 7] = quat_mj
+
+            va = self._ball_qvel_addr
+            self.root_data.qvel[va:va + 3] = lin_vel
+            self.root_data.qvel[va + 3:va + 6] = ang_vel
+
+            mujoco.mj_forward(self.root_model, self.root_data)
+            return
+
+        raise ValueError(f"Unknown object '{obj_name}' for state write")
 
     def get_actor_indices(self, names: str | ActorNames, env_ids: EnvIds | None = None) -> ActorIndices:
         """Get actor indices using ObjectRegistry with robot-only validation.

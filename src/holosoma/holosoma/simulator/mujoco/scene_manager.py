@@ -365,6 +365,48 @@ class MujocoSceneManager:
         # Store prefix for later use by simulator
         self.robot_prefix = prefix
 
+    def add_ball(
+        self,
+        radius: float = 0.075,
+        mass: float = 0.2,
+        pos: list[float] | None = None,
+        friction: tuple[float, float, float] = (1.0, 0.005, 0.001),
+        name: str = "ball",
+    ) -> None:
+        """Add a ball rigid body with freejoint to the world.
+
+        Parameters
+        ----------
+        radius : float
+            Ball radius in meters.
+        mass : float
+            Ball mass in kg.
+        pos : list[float] | None
+            Initial position [x, y, z]. Defaults to [0, 0, radius].
+        friction : tuple[float, float, float]
+            Friction coefficients [sliding, torsional, rolling].
+        name : str
+            Name for the ball body.
+        """
+        if pos is None:
+            pos = [0.0, 0.0, radius]
+
+        ball_body = self.world_spec.worldbody.add_body(name=name, pos=pos)
+        ball_body.add_freejoint(name=f"{name}_freejoint")
+        ball_body.add_geom(
+            name=f"{name}_geom",
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[radius],
+            mass=mass,
+            rgba=[1.0, 0.0, 0.0, 1.0],
+            contype=1,
+            conaffinity=3,
+            friction=list(friction),
+        )
+
+        self.ball_name = name
+        logger.info(f"Added ball '{name}': radius={radius}m, mass={mass}kg")
+
     def _apply_collision_settings(self, robot_spec: mujoco.MjSpec, robot_config: RobotConfig) -> None:
         """Apply collision settings based on unified self_collisions configuration.
 
