@@ -497,13 +497,16 @@ def feet_phase_gated(
     dynamic_swing_height_max: float | None = None,
     cmd_speed_gate_threshold: float = 0.15,
     cmd_speed_gate_ramp: float = 0.15,
+    cmd_speed_high_threshold: float = 0.0,
+    cmd_speed_high_ramp: float = 0.5,
 ) -> torch.Tensor:
-    """Reward for tracking foot height, gated by command speed.
+    """Reward for tracking foot height with band-pass command speed gating.
 
-    When commanded speed is near zero, the reward is clamped to 1.0 so
-    the agent has no incentive to keep stepping in place.  As commanded
-    speed ramps above *cmd_speed_gate_threshold*, the normal feet_phase
-    reward activates smoothly over *cmd_speed_gate_ramp*.
+    The reward is 1.0 (neutral) in two regimes and active in between:
+    - **Low speed** (cmd < *cmd_speed_gate_threshold*): no walking incentive
+    - **Mid speed**: normal feet_phase reward (walking gait shaping)
+    - **High speed** (cmd > *cmd_speed_high_threshold*, if >0): fades to 1.0
+      so the policy can freely discover running gaits
 
     All feet_phase parameters are forwarded unchanged.
     """
@@ -521,7 +524,19 @@ def feet_phase_gated(
     commands = env.command_manager.commands
     cmd_speed = torch.linalg.norm(commands[:, :2], dim=1) + 0.5 * torch.abs(commands[:, 2])
 
-    gate = torch.clamp((cmd_speed - cmd_speed_gate_threshold) / max(cmd_speed_gate_ramp, 1e-6), 0.0, 1.0)
+    # Low-speed gate: ramp up from 0→1 as cmd exceeds low threshold
+    low_gate = torch.clamp((cmd_speed - cmd_speed_gate_threshold) / max(cmd_speed_gate_ramp, 1e-6), 0.0, 1.0)
+
+    # High-speed gate: ramp down from 1→0 as cmd exceeds high threshold (0 = disabled)
+    if cmd_speed_high_threshold > 0.0:
+        high_gate = torch.clamp(
+            (cmd_speed_high_threshold + cmd_speed_high_ramp - cmd_speed) / max(cmd_speed_high_ramp, 1e-6),
+            0.0,
+            1.0,
+        )
+        gate = low_gate * high_gate
+    else:
+        gate = low_gate
 
     return gate * base_reward + (1.0 - gate) * 1.0
 
@@ -571,6 +586,8 @@ def stride_pitch_coupling(
     actual_speed_gate_ratio: float = 0.0,
     actual_speed_gate_threshold: float = 0.2,
     actual_speed_gate_vy_weight: float = 0.35,
+    high_speed_fade_threshold: float = 0.0,
+    high_speed_fade_ramp: float = 0.5,
 ) -> torch.Tensor:
     """Reward speed-dependent stride with phase-locked fore-aft foot cycling.
 
@@ -629,6 +646,17 @@ def stride_pitch_coupling(
         gated = torch.clamp(actual_speed / (desired_min_speed + 1e-6), min=0.0, max=1.0)
         speed_gate = torch.where(active_mask, gated, speed_gate)
         reward = reward * speed_gate
+
+    # High-speed fade: blend reward toward 1.0 (neutral) so the policy
+    # is free to discover running gaits unconstrained by walking stride targets.
+    if high_speed_fade_threshold > 0.0:
+        cmd_speed = lin_speed + 0.5 * yaw_speed
+        fade = torch.clamp(
+            (high_speed_fade_threshold + high_speed_fade_ramp - cmd_speed) / max(high_speed_fade_ramp, 1e-6),
+            0.0,
+            1.0,
+        )
+        reward = fade * reward + (1.0 - fade) * 1.0
 
     return reward
 

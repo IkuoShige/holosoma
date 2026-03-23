@@ -106,4 +106,24 @@ k1_22dof_agile_fast_sac = ExperimentConfig(
     ),
 )
 
-__all__ = ["k1_22dof", "k1_22dof_agile", "k1_22dof_agile_fast_sac", "k1_22dof_fast_sac"]
+k1_22dof_soccer = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_soccer_manager"),
+    algo=replace(algo.ppo, config=replace(algo.ppo.config, num_learning_iterations=35000, use_symmetry=True)),
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_agile_termination,
+    randomization=randomization.k1_22dof_soccer_randomization,
+    command=command.k1_22dof_soccer_command,
+    curriculum=curriculum.k1_22dof_soccer_curriculum,
+    reward=reward.k1_22dof_soccer_loco,
+    nightly=NightlyConfig(
+        iterations=15000,
+        metrics={"Episode/rew_tracking_ang_vel": [0.75, "inf"], "Episode/rew_tracking_lin_vel": [0.70, "inf"]},
+    ),
+)
+
+__all__ = ["k1_22dof", "k1_22dof_agile", "k1_22dof_agile_fast_sac", "k1_22dof_fast_sac", "k1_22dof_soccer"]
