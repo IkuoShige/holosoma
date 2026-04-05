@@ -127,6 +127,10 @@ class ViserBridge:
         self._server = _viser.ViserServer(host=config.host, port=config.port)
         self._scene = ViserMujocoScene(self._server, self._mj_model, num_envs=1)
 
+        # Terrain mesh
+        self._terrain_handle = None
+        self._add_terrain()
+
         # 3D arrows
         self._arrow_cmd_lin = _Arrow3D(self._server, "/arrows/cmd_lin", (50, 70, 230, 200))
         self._arrow_cmd_ang = _Arrow3D(self._server, "/arrows/cmd_ang", (50, 150, 50, 200))
@@ -203,6 +207,33 @@ class ViserBridge:
         if asset_root.startswith("@holosoma/"):
             asset_root = asset_root.replace("@holosoma", get_holosoma_root())
         return os.path.join(asset_root, self._simulator.robot_config.asset.xml_file)
+
+    def _add_terrain(self) -> None:
+        """Add terrain mesh from terrain_manager if available."""
+        sim = self._simulator
+        tm = getattr(sim, "terrain_manager", None)
+        if tm is None:
+            return
+
+        mesh = getattr(tm, "_mesh", None)
+        if mesh is None or not hasattr(mesh, "vertices") or len(mesh.vertices) == 0:
+            return
+
+        # Downsample for large terrains (>100k faces) to keep viser responsive
+        terrain_mesh = mesh.copy()
+        if len(terrain_mesh.faces) > 100_000:
+            terrain_mesh = terrain_mesh.simplify_quadric_decimation(100_000)
+
+        # Color terrain green-brown
+        terrain_mesh.visual.face_colors = [(140, 170, 110, 180)] * len(terrain_mesh.faces)
+
+        self._terrain_handle = self._server.scene.add_mesh_trimesh(
+            "/terrain", terrain_mesh
+        )
+        logger.info(
+            f"ViserBridge: terrain added ({len(terrain_mesh.vertices)} verts, "
+            f"{len(terrain_mesh.faces)} faces)"
+        )
 
     def _resolve_shadow_addressing(self) -> None:
         import mujoco as mj
@@ -286,6 +317,16 @@ class ViserBridge:
                         self._speed_multiplier = min(8.0, self._speed_multiplier * 2.0)
                     else:
                         self._speed_multiplier = 1.0
+
+            # --- Terrain ---
+            if self._terrain_handle is not None:
+                with server.gui.add_folder("Terrain", expand_by_default=False):
+                    cb_terrain = server.gui.add_checkbox("Show terrain", initial_value=True)
+
+                    @cb_terrain.on_update
+                    def _(_: _viser.GuiEvent) -> None:
+                        if self._terrain_handle is not None:
+                            self._terrain_handle.visible = cb_terrain.value
 
             # --- Velocity arrows ---
             with server.gui.add_folder("Velocity Arrows", expand_by_default=True):
@@ -560,6 +601,7 @@ class ViserBridge:
 
         with self._server.atomic():
             self._scene.update_from_mjdata(self._mj_data)
+            self._update_terrain_offset()
             if self._show_velocity:
                 self._update_velocity_arrows()
             self._update_info_panel()
@@ -575,6 +617,12 @@ class ViserBridge:
                     sim.commands[0, 2] = self._vel_joystick_yaw
             except (IndexError, AttributeError):
                 pass
+
+    def _update_terrain_offset(self) -> None:
+        """Move terrain mesh to follow camera tracking offset."""
+        if self._terrain_handle is not None:
+            offset = self._compute_scene_offset()
+            self._terrain_handle.position = offset
 
     def _update_info_panel(self) -> None:
         if self._info_handle is not None and self._total_steps % 50 == 0:
