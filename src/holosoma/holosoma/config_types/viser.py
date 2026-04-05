@@ -31,8 +31,8 @@ class ViserBridgeConfig:
     grid_height: float = 8.0
     """Ground grid height in meters."""
 
-    update_freq: int = 1
-    """Update viser every N control steps (decimation)."""
+    update_freq: int = 4
+    """Update viser every N physics steps (decimation). Higher = less overhead."""
 
     max_envs: int = 1
     """Number of environments to visualize (1 = env 0 only)."""
@@ -40,5 +40,5 @@ class ViserBridgeConfig:
     env_spacing: float = 3.0
     """Spacing between environments in multi-env mode."""
 
-    fps_limit: int = 30
-    """Cap viser updates to this frame rate."""
+    fps_limit: int = 10
+    """Cap viser updates to this frame rate. Lower = less training overhead."""

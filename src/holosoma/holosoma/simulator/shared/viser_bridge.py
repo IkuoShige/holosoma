@@ -32,9 +32,15 @@ class ViserBridge:
     """
 
     def __init__(self, simulator: BaseSimulator, config: ViserBridgeConfig) -> None:
+        import logging
+
         import viser  # type: ignore[import-not-found]
         import yourdfpy  # type: ignore[import-untyped]
         from viser.extras import ViserUrdf  # type: ignore[import-not-found]
+
+        # Suppress noisy DEBUG logs from viser dependencies
+        for noisy_logger in ("websockets", "websockets.server", "trimesh", "trimesh.util"):
+            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
         self._simulator = simulator
         self._config = config
@@ -123,34 +129,36 @@ class ViserBridge:
     def update(self) -> None:
         """Push current simulator state to viser viewer.
 
-        Called each control step. Respects update_freq decimation and fps_limit.
+        Called each physics step. Uses step counting + wall-clock throttling
+        to minimize overhead. The fast path (early return) is just an integer
+        increment + comparison — no syscalls, no tensor ops.
         """
+        # Fast path: step decimation (no syscall, just integer ops)
         self._step_count += 1
         if self._step_count % self._config.update_freq != 0:
             return
 
+        # Wall-clock throttle to cap actual FPS
         now = time.monotonic()
         if (now - self._last_update_time) < self._min_update_interval:
             return
         self._last_update_time = now
 
-        sim = self._simulator
+        self._push_state()
+
+    def _push_state(self) -> None:
+        """Transfer simulator state to viser (GPU→CPU sync happens here)."""
         import numpy as np
 
-        # Read state for env 0
+        sim = self._simulator
+
         # dof_pos: [num_envs, num_dof] → [num_dof]
         dof_pos = sim.dof_pos[0].detach().cpu().numpy()
 
-        # Robot root state: [num_envs, 13] = [x,y,z, qx,qy,qz,qw, vx,vy,vz, wx,wy,wz]
-        # Use robot_root_states (not _rigid_body_pos[0,0] which is MuJoCo worldbody at origin)
-        root_state = sim.robot_root_states[0].detach().cpu().numpy()  # [13]
+        # Robot root state: [num_envs, 13] = [x,y,z, qx,qy,qz,qw, ...]
+        root_state = sim.robot_root_states[0].detach().cpu().numpy()
         root_pos = root_state[:3]
-        root_rot_xyzw = root_state[3:7]
-
-        # Convert xyzw → wxyz for viser
-        root_rot_wxyz = np.array([
-            root_rot_xyzw[3], root_rot_xyzw[0], root_rot_xyzw[1], root_rot_xyzw[2]
-        ])
+        qx, qy, qz, qw = root_state[3], root_state[4], root_state[5], root_state[6]
 
         # Build ViserUrdf joint config array
         joint_cfg = np.zeros(self._viser_dof)
@@ -160,7 +168,7 @@ class ViserBridge:
         # Apply updates atomically to avoid flickering
         with self._server.atomic():
             self._robot_root.position = root_pos
-            self._robot_root.wxyz = root_rot_wxyz
+            self._robot_root.wxyz = (qw, qx, qy, qz)
             self._viser_robot.update_cfg(joint_cfg)
 
     def cleanup(self) -> None:
