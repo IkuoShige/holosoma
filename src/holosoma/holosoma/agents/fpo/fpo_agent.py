@@ -97,10 +97,10 @@ class FPOAgent(PPO):
         if self.config.obs_normalization:
             actor_obs_dim = sum(self.algo_obs_dim_dict[k] for k in self.actor_obs_keys)
             critic_obs_dim = sum(self.algo_obs_dim_dict[k] for k in self.critic_obs_keys)
-            self.obs_normalizer = EmpiricalNormalization(shape=actor_obs_dim, device=self.device)
+            self.actor_obs_normalizer = EmpiricalNormalization(shape=actor_obs_dim, device=self.device)
             self.critic_obs_normalizer = EmpiricalNormalization(shape=critic_obs_dim, device=self.device)
         else:
-            self.obs_normalizer = nn.Identity()
+            self.actor_obs_normalizer = nn.Identity()
             self.critic_obs_normalizer = nn.Identity()
 
         if self.use_symmetry:
@@ -226,7 +226,7 @@ class FPOAgent(PPO):
 
             # FPO flow uses normalized obs (also updates normalizer running stats)
             if self.config.obs_normalization:
-                actor_obs = self.obs_normalizer(actor_obs_raw)
+                actor_obs = self.actor_obs_normalizer(actor_obs_raw)
             else:
                 actor_obs = actor_obs_raw
 
@@ -284,7 +284,7 @@ class FPOAgent(PPO):
                 critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
 
                 # Normalize observations (updates running stats in train mode)
-                actor_obs = self.obs_normalizer(actor_obs)
+                actor_obs = self.actor_obs_normalizer(actor_obs)
                 critic_obs = self.critic_obs_normalizer(critic_obs)
 
                 # Generate actions via ODE integration
@@ -822,7 +822,7 @@ class FPOAgent(PPO):
             checkpoint_dict["ema_state_dict"] = self.ema.state_dict()
             checkpoint_dict["ema_update_counter"] = self._ema_update_counter
         if self.config.obs_normalization:
-            checkpoint_dict["obs_normalizer_state"] = self.obs_normalizer.state_dict()
+            checkpoint_dict["obs_normalizer_state"] = self.actor_obs_normalizer.state_dict()
             checkpoint_dict["critic_obs_normalizer_state"] = self.critic_obs_normalizer.state_dict()
         checkpoint_dict.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
         env_state = self._collect_env_state()
@@ -847,7 +847,7 @@ class FPOAgent(PPO):
                 self._ema_update_counter = loaded_dict.get("ema_update_counter", 0)
                 logger.info(f"Loaded EMA state (update_counter={self._ema_update_counter})")
             if self.config.obs_normalization and "obs_normalizer_state" in loaded_dict:
-                self.obs_normalizer.load_state_dict(loaded_dict["obs_normalizer_state"])
+                self.actor_obs_normalizer.load_state_dict(loaded_dict["obs_normalizer_state"])
                 self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_normalizer_state"])
                 logger.info("Loaded observation normalizer states from checkpoint")
             self.current_learning_iteration = loaded_dict["iter"]
@@ -935,7 +935,7 @@ class FPOAgent(PPO):
             self.ema.copy_to(actor)
 
         use_obs_norm = self.config.obs_normalization
-        obs_norm_copy = copy.deepcopy(self.obs_normalizer).cpu() if use_obs_norm else None
+        obs_norm_copy = copy.deepcopy(self.actor_obs_normalizer).cpu() if use_obs_norm else None
         use_tanh = self.config.use_tanh
         action_bound = actor.action_bound
         actor_scale = actor.actor_scale
@@ -951,11 +951,11 @@ class FPOAgent(PPO):
                 self._actor_scale = actor_scale
                 self._use_tanh = use_tanh
                 self._flow_param_mode = flow_actor.flow_param_mode
-                self.obs_normalizer = obs_normalizer
+                self.actor_obs_normalizer = obs_normalizer
 
             def forward(self, actor_obs: torch.Tensor) -> torch.Tensor:
-                if self.obs_normalizer is not None:
-                    actor_obs = self.obs_normalizer(actor_obs, update=False)
+                if self.actor_obs_normalizer is not None:
+                    actor_obs = self.actor_obs_normalizer(actor_obs, update=False)
                 k = self.export_num_flow_steps
                 dt = 1.0 / k
                 x = actor_obs.new_zeros(actor_obs.shape[0], self.num_actions)
@@ -1036,7 +1036,7 @@ class FPOAgent(PPO):
         flow_steps = num_flow_steps or self.config.num_flow_steps
 
         if self.config.obs_normalization:
-            normalizer = self.obs_normalizer
+            normalizer = self.actor_obs_normalizer
             normalizer.eval()
             if device is not None:
                 normalizer.to(device)
