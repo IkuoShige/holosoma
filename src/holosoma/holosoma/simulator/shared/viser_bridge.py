@@ -70,12 +70,12 @@ class _Arrow3D:
     """A single 3D arrow (shaft cylinder + cone head) in the viser scene."""
 
     def __init__(self, server: viser.ViserServer, name: str, color: tuple[int, int, int]):
-        self._shaft = server.scene.add_mesh_trimesh(
-            f"{name}/shaft", _make_shaft_mesh(), color=color
-        )
-        self._head = server.scene.add_mesh_trimesh(
-            f"{name}/head", _make_head_mesh(), color=color
-        )
+        shaft = _make_shaft_mesh()
+        shaft.visual.face_colors = [(*color, 200)] * len(shaft.faces)
+        head = _make_head_mesh()
+        head.visual.face_colors = [(*color, 200)] * len(head.faces)
+        self._shaft = server.scene.add_mesh_trimesh(f"{name}/shaft", shaft)
+        self._head = server.scene.add_mesh_trimesh(f"{name}/head", head)
         self.visible = True
 
     def update(self, start: np.ndarray, end: np.ndarray, scene_offset: np.ndarray) -> None:
