@@ -272,7 +272,6 @@ class ViserBridge:
                 # Speed controls
                 speed_group = server.gui.add_button_group(
                     "Speed", ("0.25x", "0.5x", "1x", "2x", "4x"),
-                    initial_value="1x",
                 )
                 _SPEED_MAP = {"0.25x": 0.25, "0.5x": 0.5, "1x": 1.0, "2x": 2.0, "4x": 4.0}
 
