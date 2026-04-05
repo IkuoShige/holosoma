@@ -259,10 +259,13 @@ class ViserBridge:
         terrain_mesh.update_faces(mask)
         terrain_mesh.remove_unreferenced_vertices()
 
-        # Downsample if still too large
+        # Downsample if still too large (skip if fast_simplification not installed)
         if len(terrain_mesh.faces) > 50_000:
-            terrain_mesh = terrain_mesh.simplify_quadric_decimation(50_000)
-            logger.info(f"ViserBridge: decimated terrain to {len(terrain_mesh.faces)} faces")
+            try:
+                terrain_mesh = terrain_mesh.simplify_quadric_decimation(50_000)
+                logger.info(f"ViserBridge: decimated terrain to {len(terrain_mesh.faces)} faces")
+            except (ImportError, Exception):
+                logger.info(f"ViserBridge: decimation skipped, using {len(terrain_mesh.faces)} faces")
 
         # Semi-transparent green-brown
         terrain_mesh.visual.face_colors = [(140, 170, 110, 140)] * len(terrain_mesh.faces)
