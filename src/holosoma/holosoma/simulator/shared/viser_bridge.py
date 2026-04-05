@@ -116,18 +116,10 @@ class ViserBridge:
 
         spec = mj.MjSpec.from_file(mjcf_path)
 
-        # Remove contact pairs that reference non-existent geoms (e.g. 'floor')
-        # Iterate in reverse to safely delete by index
-        pairs_to_remove = []
-        for i in range(spec.npair):
-            pair = spec.pairs[i]
-            name = pair.name if hasattr(pair, "name") else ""
-            # Check if either geom reference would fail (floor, ground, etc.)
-            # We remove all contact pairs since FK-only model needs none
-            pairs_to_remove.append(i)
-
-        for i in reversed(pairs_to_remove):
-            spec.pairs[i].delete()
+        # Remove all contact pairs (FK-only model needs none, and they
+        # reference external geoms like 'floor' that don't exist here)
+        while len(spec.pair) > 0:
+            spec.pair[0].delete()
 
         model = spec.compile()
         data = mj.MjData(model)
