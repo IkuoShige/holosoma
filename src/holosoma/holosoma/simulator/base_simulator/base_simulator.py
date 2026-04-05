@@ -499,11 +499,17 @@ class BaseSimulator:
 
     # ----- Viser Web Viewer -----
 
-    def _init_viser_bridge(self) -> None:
+    def _init_viser_bridge(self, **kwargs) -> None:
         """Initialize viser web viewer bridge if enabled.
 
         Should be called by subclasses after robot assets are loaded
         and after refresh_sim_tensors() has been called at least once.
+
+        Parameters
+        ----------
+        **kwargs
+            Passed to ViserBridge constructor. MuJoCo simulator passes
+            ``mj_model`` and ``mj_data`` for direct mode.
         """
         if not self.simulator_config.viser.enabled:
             return
@@ -511,10 +517,10 @@ class BaseSimulator:
         try:
             from holosoma.simulator.shared.viser_bridge import ViserBridge
 
-            self.viser_bridge = ViserBridge(self, self.simulator_config.viser)
+            self.viser_bridge = ViserBridge(self, self.simulator_config.viser, **kwargs)
         except ImportError as e:
             logger.warning(f"Viser requested but not installed: {e}")
-            logger.warning("Install with: pip install viser yourdfpy")
+            logger.warning("Install with: pip install mjviser")
         except Exception as e:
             logger.error(f"Failed to initialize viser bridge: {e}")
             raise

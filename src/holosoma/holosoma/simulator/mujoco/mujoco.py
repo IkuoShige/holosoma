@@ -366,8 +366,8 @@ class MuJoCo(BaseSimulator):
         # Initialize bridge system using base class helper
         self._init_bridge()
 
-        # Initialize viser web viewer
-        self._init_viser_bridge()
+        # Initialize viser web viewer (direct mode: pass MuJoCo model/data)
+        self._init_viser_bridge(mj_model=self.root_model, mj_data=self.root_data)
 
         if self.video_config.enabled:
             self.video_recorder = MuJoCoVideoRecorder(self.video_config, self)
