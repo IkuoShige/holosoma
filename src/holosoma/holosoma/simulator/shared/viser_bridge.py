@@ -213,10 +213,18 @@ class ViserBridge:
         sim = self._simulator
         tm = getattr(sim, "terrain_manager", None)
         if tm is None:
+            logger.debug("ViserBridge: no terrain_manager")
             return
 
-        mesh = getattr(tm, "_mesh", None)
+        # terrain_manager.terrain_term holds the TerrainTermBase with .mesh property
+        term = getattr(tm, "terrain_term", None)
+        if term is None:
+            logger.debug("ViserBridge: no terrain_term on manager")
+            return
+
+        mesh = getattr(term, "mesh", None) or getattr(term, "_mesh", None)
         if mesh is None or not hasattr(mesh, "vertices") or len(mesh.vertices) == 0:
+            logger.debug("ViserBridge: terrain term has no mesh")
             return
 
         # Downsample for large terrains (>100k faces) to keep viser responsive
