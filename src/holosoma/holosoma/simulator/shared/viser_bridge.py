@@ -11,7 +11,6 @@ Requires: ``pip install mjviser``
 
 from __future__ import annotations
 
-import math
 import os
 import time
 from typing import TYPE_CHECKING
@@ -50,52 +49,44 @@ class ViserBridge:
         self._step_count = 0
         self._last_update_time = 0.0
         self._min_update_interval = 1.0 / max(config.fps_limit, 1)
-        self._paused = False
 
-        # Always use shadow model (robot-only MJCF, no terrain)
+        # Shadow model (robot-only MJCF, no terrain)
         self._mj_model, self._mj_data = self._create_shadow_model()
         self._resolve_shadow_addressing()
-        logger.info(
-            f"ViserBridge: shadow model loaded ({self._mj_model.nq} qpos, "
-            f"{len([a for a in self._shadow_dof_addrs if a >= 0])} mapped DOFs)"
-        )
+
+        mapped = len([a for a in self._shadow_dof_addrs if a >= 0])
+        logger.info(f"ViserBridge: shadow model ({mapped}/{simulator.num_dof} DOFs mapped)")
 
         # Create viser server + mjviser scene
         self._server = viser.ViserServer(host=config.host, port=config.port)
         self._scene = ViserMujocoScene(self._server, self._mj_model, num_envs=1)
 
-        # mjviser GUI (Scene + Overlay + Groups in tabs)
-        tab_group = self._scene.create_visualization_gui()
+        # mjviser full GUI — handles camera, overlays, groups, FOV, tracking
+        # This sets up on_client_connect, camera position, FOV, etc.
+        tab_group = self._scene.create_visualization_gui(
+            camera_distance=3.0,
+            camera_azimuth=150.0,
+            camera_elevation=25.0,
+        )
 
-        # Add holosoma-specific controls in a new tab
-        self._setup_holosoma_gui(tab_group)
+        # Add holosoma-specific controls tab
+        self._show_velocity = True
+        self._velocity_scale = 1.0
+        self._setup_controls_tab(tab_group)
 
-        # Velocity command arrow
-        self._velocity_handle = self._server.scene.add_line_segments(
+        # Velocity command arrows
+        self._velocity_cmd_handle = self._server.scene.add_line_segments(
             "/velocity_cmd",
             points=np.zeros((1, 2, 3), dtype=np.float32),
-            colors=np.array([[[0.1, 0.4, 1.0], [0.1, 0.4, 1.0]]], dtype=np.float32),
+            colors=np.array([[[0.2, 0.3, 1.0], [0.2, 0.3, 1.0]]], dtype=np.float32),
             line_width=5.0,
         )
         self._velocity_actual_handle = self._server.scene.add_line_segments(
             "/velocity_actual",
             points=np.zeros((1, 2, 3), dtype=np.float32),
-            colors=np.array([[[0.0, 0.8, 0.4], [0.0, 0.8, 0.4]]], dtype=np.float32),
+            colors=np.array([[[0.0, 0.8, 0.3], [0.0, 0.8, 0.3]]], dtype=np.float32),
             line_width=4.0,
         )
-        self._show_velocity = True
-        self._velocity_scale = 1.0
-
-        # Set initial camera for connecting clients
-        self._camera_offset = self._compute_camera_offset(
-            azimuth=150.0, elevation=25.0, distance=3.0
-        )
-
-        @self._server.on_client_connect
-        def _(client: viser.ClientHandle) -> None:
-            client.camera.position = self._camera_offset
-            client.camera.look_at = np.zeros(3)
-            client.camera.fov = 60.0
 
         logger.info(f"ViserBridge: ready at http://{config.host}:{config.port}")
 
@@ -104,13 +95,7 @@ class ViserBridge:
     # ================================================================
 
     def _create_shadow_model(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
-        """Load robot MJCF into a standalone MuJoCo model for FK-only rendering.
-
-        The robot MJCF may reference external geoms (e.g. 'floor') in
-        ``<contact>`` pairs.  Instead of stripping them we inject a tiny
-        invisible floor plane so the MJCF compiles unmodified, preserving
-        the native mesh/texture loading path.
-        """
+        """Load robot MJCF with dummy floor so contact pairs compile."""
         import mujoco as mj
         from xml.etree import ElementTree as ET
 
@@ -120,7 +105,7 @@ class ViserBridge:
         tree = ET.parse(mjcf_path)
         root = tree.getroot()
 
-        # Inject dummy floor geom into worldbody so contact pairs compile
+        # Inject invisible dummy floor geom so contact pairs compile
         worldbody = root.find("worldbody")
         if worldbody is None:
             worldbody = ET.SubElement(root, "worldbody")
@@ -128,12 +113,12 @@ class ViserBridge:
             "name": "floor",
             "type": "plane",
             "size": "10 10 0.01",
-            "rgba": "0 0 0 0",  # fully transparent
+            "rgba": "0 0 0 0",
             "contype": "1",
             "conaffinity": "1",
         })
 
-        # Write to temp file so MuJoCo resolves mesh paths relative to original dir
+        # Write temp file in same dir so MuJoCo resolves mesh paths
         import tempfile
         mjcf_dir = os.path.dirname(mjcf_path)
         with tempfile.NamedTemporaryFile(
@@ -169,9 +154,8 @@ class ViserBridge:
             self._shadow_qpos_root_addr: int | None = model.jnt_qposadr[0]
         else:
             self._shadow_qpos_root_addr = None
-            logger.warning("ViserBridge: shadow model has no freejoint")
 
-        # Build shadow joint name → qpos address mapping
+        # Shadow joint name → qpos address
         shadow_joint_map: dict[str, int] = {}
         for jnt_id in range(model.njnt):
             jnt_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id)
@@ -180,7 +164,6 @@ class ViserBridge:
 
         # Map simulator DOFs → shadow qpos addresses
         self._shadow_dof_addrs: list[int] = []
-        unmapped = []
         for sim_name in self._simulator.dof_names:
             addr = shadow_joint_map.get(sim_name)
             if addr is None:
@@ -190,72 +173,44 @@ class ViserBridge:
                         addr = shadow_joint_map.get(stripped)
                         if addr is not None:
                             break
-            if addr is not None:
-                self._shadow_dof_addrs.append(addr)
-            else:
-                self._shadow_dof_addrs.append(-1)
-                unmapped.append(sim_name)
-
-        if unmapped:
-            logger.warning(f"ViserBridge: {len(unmapped)} unmapped DOFs: {unmapped[:5]}")
+            self._shadow_dof_addrs.append(addr if addr is not None else -1)
 
     def _sync_shadow_state(self) -> None:
-        """Copy simulator state into shadow mj_data and run forward kinematics."""
+        """Copy simulator state into shadow mj_data and run mj_forward."""
         import mujoco as mj
 
         sim = self._simulator
         data = self._mj_data
 
-        # Root state: [x,y,z, qx,qy,qz,qw, ...]
         root_state = sim.robot_root_states[0].detach().cpu().numpy()
 
         if self._shadow_qpos_root_addr is not None:
             a = self._shadow_qpos_root_addr
-            data.qpos[a : a + 3] = root_state[:3]  # xyz
+            data.qpos[a : a + 3] = root_state[:3]
             # holosoma xyzw → MuJoCo qpos wxyz
             data.qpos[a + 3] = root_state[6]  # qw
             data.qpos[a + 4] = root_state[3]  # qx
             data.qpos[a + 5] = root_state[4]  # qy
             data.qpos[a + 6] = root_state[5]  # qz
 
-        # Joint positions
         dof_pos = sim.dof_pos[0].detach().cpu().numpy()
         for sim_idx, qpos_addr in enumerate(self._shadow_dof_addrs):
             if qpos_addr >= 0:
                 data.qpos[qpos_addr] = dof_pos[sim_idx]
 
-        # FK only (no physics step)
         mj.mj_forward(self._mj_model, data)
 
     # ================================================================
-    # GUI
+    # GUI (holosoma-specific controls)
     # ================================================================
 
-    def _setup_holosoma_gui(self, tab_group) -> None:
-        """Add holosoma-specific controls as an additional tab."""
+    def _setup_controls_tab(self, tab_group) -> None:
         import viser  # type: ignore[import-not-found]
 
         server = self._server
 
         with tab_group.add_tab("Controls"):
-            # --- Playback ---
-            with server.gui.add_folder("Playback", expand_by_default=True):
-                btn_pause = server.gui.add_button("Pause", icon=viser.Icon.PLAYER_PAUSE)
-                btn_play = server.gui.add_button("Play", icon=viser.Icon.PLAYER_PLAY, visible=False)
-
-                @btn_pause.on_click
-                def _(_: viser.GuiEvent) -> None:
-                    self._paused = True
-                    btn_pause.visible = False
-                    btn_play.visible = True
-
-                @btn_play.on_click
-                def _(_: viser.GuiEvent) -> None:
-                    self._paused = False
-                    btn_play.visible = False
-                    btn_pause.visible = True
-
-            # --- Velocity Command ---
+            # Velocity arrows
             with server.gui.add_folder("Velocity Command", expand_by_default=True):
                 cb_vel = server.gui.add_checkbox("Show arrows", initial_value=True)
                 sl_scale = server.gui.add_slider(
@@ -265,44 +220,32 @@ class ViserBridge:
                 @cb_vel.on_update
                 def _(_: viser.GuiEvent) -> None:
                     self._show_velocity = cb_vel.value
-                    self._velocity_handle.visible = cb_vel.value
+                    self._velocity_cmd_handle.visible = cb_vel.value
                     self._velocity_actual_handle.visible = cb_vel.value
 
                 @sl_scale.on_update
                 def _(_: viser.GuiEvent) -> None:
                     self._velocity_scale = sl_scale.value
 
-            # --- Info ---
+            # Info
             with server.gui.add_folder("Info"):
                 sim_name = type(self._simulator).__name__
-                num_dof = self._simulator.num_dof
                 mapped = len([a for a in self._shadow_dof_addrs if a >= 0])
                 server.gui.add_markdown(
                     f"**Simulator:** {sim_name}\n\n"
-                    f"**DOFs:** {mapped}/{num_dof} mapped\n\n"
-                    f"**Mode:** shadow FK"
+                    f"**DOFs:** {mapped}/{self._simulator.num_dof}\n\n"
+                    f"**FPS limit:** {self._config.fps_limit}"
                 )
-
-    @staticmethod
-    def _compute_camera_offset(azimuth: float, elevation: float, distance: float) -> np.ndarray:
-        az = math.radians(azimuth)
-        el = math.radians(elevation)
-        return np.array([
-            -math.cos(el) * math.cos(az),
-            -math.cos(el) * math.sin(az),
-            math.sin(el),
-        ]) * distance
 
     # ================================================================
     # Update loop
     # ================================================================
 
     def update(self) -> None:
-        """Push current simulator state to mjviser. Fast path is integer ops only."""
         self._step_count += 1
         if self._step_count % self._config.update_freq != 0:
             return
-        if self._paused:
+        if self._scene.paused:
             return
         now = time.monotonic()
         if (now - self._last_update_time) < self._min_update_interval:
@@ -310,11 +253,12 @@ class ViserBridge:
         self._last_update_time = now
 
         self._sync_shadow_state()
-        self._scene.update_from_mjdata(self._mj_data)
-        self._update_velocity_arrows()
+
+        with self._server.atomic():
+            self._scene.update_from_mjdata(self._mj_data)
+            self._update_velocity_arrows()
 
     def _update_velocity_arrows(self) -> None:
-        """Draw velocity command and actual velocity arrows from robot base."""
         if not self._show_velocity:
             return
 
@@ -323,49 +267,41 @@ class ViserBridge:
         root_pos = root_state[:3]
         qx, qy, qz, qw = root_state[3], root_state[4], root_state[5], root_state[6]
 
-        # 2D rotation matrix from quaternion (XY plane)
+        # 2D rotation (XY plane) from quaternion
         R = np.array([
             [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw)],
             [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz)],
         ])
 
-        # Scene offset from camera tracking
-        scene_offset = np.zeros(3)
-        if self._scene.camera_tracking_enabled:
-            tracked = self._mj_data.xpos[self._scene._tracked_body_id] if self._scene._tracked_body_id is not None else root_pos
-            scene_offset = -tracked.copy()
-            scene_offset[2] = 0.0
-
+        # Scene offset from mjviser camera tracking
+        scene_offset = self._scene._scene_offset
         base = root_pos + scene_offset
-        z_offset = 0.15
-        start = np.array([base[0], base[1], z_offset])
+        z_off = 0.15
+        start = np.array([base[0], base[1], z_off])
 
-        # --- Command velocity arrow (blue) ---
-        cmd_points = np.zeros((1, 2, 3), dtype=np.float32)
+        # Command velocity arrow (blue)
+        cmd_pts = np.zeros((1, 2, 3), dtype=np.float32)
         if hasattr(sim, "commands") and sim.commands is not None:
             try:
                 cmd = sim.commands[0].detach().cpu().numpy()
-                if len(cmd) >= 2:
-                    vx, vy = cmd[0], cmd[1]
-                    vel_world = R @ np.array([vx, vy]) * self._velocity_scale
-                    cmd_points[0, 0] = start
-                    cmd_points[0, 1] = start + np.array([vel_world[0], vel_world[1], 0.0])
+                if len(cmd) >= 2 and (abs(cmd[0]) > 0.01 or abs(cmd[1]) > 0.01):
+                    vel_w = R @ np.array([cmd[0], cmd[1]]) * self._velocity_scale
+                    cmd_pts[0, 0] = start
+                    cmd_pts[0, 1] = start + np.array([vel_w[0], vel_w[1], 0.0])
             except (IndexError, AttributeError):
                 pass
-        self._velocity_handle.points = cmd_points
+        self._velocity_cmd_handle.points = cmd_pts
 
-        # --- Actual velocity arrow (green) ---
-        actual_points = np.zeros((1, 2, 3), dtype=np.float32)
-        vx_actual = root_state[7]  # linear vel x (world frame)
-        vy_actual = root_state[8]  # linear vel y (world frame)
-        if abs(vx_actual) > 0.01 or abs(vy_actual) > 0.01:
-            actual_points[0, 0] = start + np.array([0, 0, 0.05])
-            actual_points[0, 1] = actual_points[0, 0] + np.array([
-                vx_actual * self._velocity_scale,
-                vy_actual * self._velocity_scale,
-                0.0,
+        # Actual velocity arrow (green)
+        act_pts = np.zeros((1, 2, 3), dtype=np.float32)
+        vx, vy = root_state[7], root_state[8]
+        if abs(vx) > 0.01 or abs(vy) > 0.01:
+            act_start = start + np.array([0, 0, 0.05])
+            act_pts[0, 0] = act_start
+            act_pts[0, 1] = act_start + np.array([
+                vx * self._velocity_scale, vy * self._velocity_scale, 0.0
             ])
-        self._velocity_actual_handle.points = actual_points
+        self._velocity_actual_handle.points = act_pts
 
     # ================================================================
     # Lifecycle
