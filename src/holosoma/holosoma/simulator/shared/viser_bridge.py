@@ -64,12 +64,13 @@ class ViserBridge:
                 position=(0.0, 0.0, 0.0),
             )
 
+        # ViserUrdf actuated joint names (dict: name → (lower, upper))
+        joint_limits = self._viser_robot.get_actuated_joint_limits()
+        self._viser_joint_names = list(joint_limits.keys())
+        self._viser_dof = len(self._viser_joint_names)
+
         # Build joint name mapping (simulator DOF index → ViserUrdf joint index)
         self._joint_mapping = self._build_joint_mapping()
-
-        # ViserUrdf joint count
-        joint_limits = self._viser_robot.get_actuated_joint_limits()
-        self._viser_dof = len(joint_limits)
 
         logger.info(
             f"ViserBridge: ready at http://{config.host}:{config.port} "
@@ -91,8 +92,7 @@ class ViserBridge:
 
         Handles prefix differences (e.g., 'robot_left_hip_roll' → 'left_hip_roll').
         """
-        joint_limits = self._viser_robot.get_actuated_joint_limits()
-        viser_joint_names = [name for name, _ in joint_limits]
+        viser_joint_names = self._viser_joint_names
 
         sim_to_viser: dict[int, int] = {}
         unmapped = []
