@@ -660,10 +660,17 @@ class ViserBridge:
                 pass
 
     def _update_terrain_offset(self) -> None:
-        """Move terrain mesh to follow camera tracking offset."""
+        """Move terrain mesh to follow camera tracking offset (full 3D, including Z)."""
         if self._terrain_handle is not None:
-            offset = self._compute_scene_offset()
-            self._terrain_handle.position = offset
+            # Terrain needs full 3D offset (including Z) to align with robot's ground plane.
+            # Unlike velocity arrows which only need XY tracking.
+            if self._scene.camera_tracking_enabled:
+                tracked_id = getattr(self._scene, "_tracked_body_id", None)
+                if tracked_id is not None and tracked_id < self._mj_model.nbody:
+                    offset = -self._mj_data.xpos[tracked_id].copy()
+                    self._terrain_handle.position = offset
+                    return
+            self._terrain_handle.position = np.zeros(3)
 
     def _update_info_panel(self) -> None:
         if self._info_handle is not None and self._total_steps % 50 == 0:
