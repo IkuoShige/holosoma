@@ -74,7 +74,7 @@ class ViserBridge:
 
         logger.info(
             f"ViserBridge: ready at http://{config.host}:{config.port} "
-            f"(mapped {len(self._joint_mapping)}/{simulator.num_dofs} DOFs)"
+            f"(mapped {len(self._joint_mapping)}/{simulator.num_dof} DOFs)"
         )
 
     def _resolve_urdf_path(self) -> str:
