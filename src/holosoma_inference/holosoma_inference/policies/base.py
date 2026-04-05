@@ -19,7 +19,7 @@ from termcolor import colored
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
 from holosoma_inference.config.config_types.robot import RobotConfig
-from holosoma_inference.sdk.interface_wrapper import InterfaceWrapper
+from holosoma_inference.sdk import create_interface
 from holosoma_inference.utils.latency import LatencyTracker
 from holosoma_inference.utils.math.quat import quat_rotate_inverse
 from holosoma_inference.utils.rate import RateLimiter
@@ -89,20 +89,18 @@ class BasePolicy:
             self.lower_dof_indices = []
 
     def _init_sdk_components(self):
-        """Initialize SDK components based on robot type."""
+        """Additional SDK components initialization based on robot type."""
+        if hasattr(self, "_shared_hardware_source"):
+            self.sdk_type = self._shared_hardware_source.sdk_type
+            return
         self.sdk_type = self.robot_config.sdk_type
-
-        if self.sdk_type == "unitree":
-            pass  # No channel initialization needed for binding
-        elif self.sdk_type == "ros2":
-            pass
-        elif self.sdk_type == "booster":
+        if self.sdk_type == "booster":
             from booster_robotics_sdk import ChannelFactory
 
             ip = ni.ifaddresses(self.config.task.interface)[ni.AF_INET][0]["addr"]
             ChannelFactory.Instance().Init(self.config.task.domain_id, ip)
         else:
-            raise NotImplementedError(f"SDK type {self.sdk_type} is not supported yet")
+            pass  # No channel initialization needed for Unitree binding / other robots
 
     def _init_obs_config(self):
         """Initialize observation metadata and history buffers."""
@@ -136,8 +134,11 @@ class BasePolicy:
             self.obs_buf_dict[group] = np.concatenate(flattened_terms, axis=1) if flattened_terms else np.zeros((1, 0))
 
     def _init_communication_components(self):
-        """Initialize state processor and command sender using the wrapper."""
-        self.interface = InterfaceWrapper(
+        """Initialize appropriate robot interface."""
+        if hasattr(self, "_shared_hardware_source"):
+            self.interface = self._shared_hardware_source.interface
+            return
+        self.interface = create_interface(
             self.robot_config,
             self.config.task.domain_id,
             self.config.task.interface,
@@ -294,6 +295,12 @@ class BasePolicy:
 
     def _init_input_handlers(self):
         """Initialize input handlers (ROS, joystick, keyboard)."""
+        if hasattr(self, "_shared_hardware_source"):
+            self.logger = self._shared_hardware_source.logger
+            self.rate = self._shared_hardware_source.rate
+            self.rl_rate = self._shared_hardware_source.rl_rate
+            self.use_joystick = self._shared_hardware_source.use_joystick
+            return
         self._init_rate_handler()
         self._init_input_device()
 
@@ -408,12 +415,8 @@ class BasePolicy:
             self.robot_config = replace(
                 self.robot_config, motor_kp=tuple(kp_values.tolist()), motor_kd=tuple(kd_values.tolist())
             )
-            # Update InterfaceWrapper's robot_config reference since replace() creates a new object
-            self.interface.robot_config = self.robot_config
-            # Update sdk2py backend components (booster SDK only)
-            if self.interface.backend == "sdk2py":
-                self.interface.command_sender.config = self.robot_config
-                self.interface.state_processor.config = self.robot_config
+            # Update interface's robot_config and propagate to internal SDK components
+            self.interface.update_config(self.robot_config)
         else:
             # No values available - error
             raise ValueError(
@@ -440,14 +443,67 @@ class BasePolicy:
                 obs_dim_dict[key] += self.obs_dims[obs_name]
         return obs_dim_dict
 
+    def _print_observations(self, obs: dict[str, np.ndarray]) -> None:
+        """Print observation vector with term naming for debugging.
+
+        Args:
+            obs: Dictionary mapping observation group names to their flattened arrays.
+        """
+        np.set_printoptions(suppress=True, precision=3)
+        print("\n========== Observation Vector ==========")
+        for group_name, group_obs in obs.items():
+            print(f"\n{group_name}:")
+            if group_name in self.obs_dict:
+                start_idx = 0
+                for term_name in self.obs_terms_sorted.get(group_name, []):
+                    term_dim = self.obs_dims[term_name]
+                    history_len = self.history_length_dict.get(group_name, 1)
+                    total_dim = term_dim * history_len
+                    term_values = group_obs[0, start_idx : start_idx + total_dim]
+                    print(f"  {term_name:20s} (dim={term_dim:2d}, hist={history_len}): {term_values}")
+                    start_idx += total_dim
+
+        # Joint table: dof_name | q (deg) | dq | action
+        self._print_joint_table(obs)
+        print("========================================\n")
+
+    def _print_joint_table(self, obs: dict[str, np.ndarray]) -> None:
+        """Print a compact per-joint table: name | q(°) | dq(°/s) | act(°)."""
+        # Walk obs_terms_sorted + obs_dims to locate dof_pos / dof_vel slices
+        q = dq = None
+        for grp, buf in obs.items():
+            col = 0
+            for term in self.obs_terms_sorted.get(grp, []):
+                dim = self.obs_dims[term] * self.history_length_dict.get(grp, 1)
+                if q is None and term == "dof_pos":
+                    q = buf[0, col : col + dim] / self.obs_scales.get("dof_pos", 1.0)
+                if dq is None and term == "dof_vel":
+                    dq = buf[0, col : col + dim] / self.obs_scales.get("dof_vel", 1.0)
+                col += dim
+        act = self.scaled_policy_action[0] if self.scaled_policy_action is not None else None
+        d = np.degrees
+        w = max(len(n) for n in self.dof_names)
+        print(f"\n  {'joint':<{w}}  {'q(°)':>7}  {'dq(°/s)':>8}  {'act(°)':>7}")
+        print(f"  {'─' * (w + 29)}")
+        for i, name in enumerate(self.dof_names):
+            qi = f"{d(q[i]):7.1f}" if q is not None and i < len(q) else "    n/a"
+            di = f"{d(dq[i]):8.1f}" if dq is not None and i < len(dq) else "     n/a"
+            ai = f"{d(act[i]):7.1f}" if act is not None and i < len(act) else "    n/a"
+            print(f"  {name:<{w}}  {qi}  {di}  {ai}")
+
     def rl_inference(self, robot_state_data):
         """Perform RL inference to get policy action."""
         obs = self.prepare_obs_for_rl(robot_state_data)
+        if self.config.task.print_observations:
+            self._print_observations(obs)
+
         policy_action = self.policy(obs)
         policy_action = np.clip(policy_action, -100, 100)
 
         self.last_policy_action = policy_action.copy()
         self.scaled_policy_action = policy_action * self.policy_action_scale
+        if self.config.task.debug.force_zero_action:
+            self.scaled_policy_action = np.zeros_like(self.scaled_policy_action)
 
         return self.scaled_policy_action
 
@@ -461,15 +517,27 @@ class BasePolicy:
 
         # Extract base and joint data
         current_obs_buffer_dict["base_quat"] = robot_state_data[:, 3:7]
-        current_obs_buffer_dict["base_ang_vel"] = robot_state_data[:, 7 + self.num_dofs + 3 : 7 + self.num_dofs + 6]
+        if self.config.task.debug.force_zero_angular_velocity:
+            current_obs_buffer_dict["base_ang_vel"] = np.zeros((1, 3))
+        else:
+            current_obs_buffer_dict["base_ang_vel"] = robot_state_data[:, 7 + self.num_dofs + 3 : 7 + self.num_dofs + 6]
         current_obs_buffer_dict["dof_pos"] = robot_state_data[:, 7 : 7 + self.num_dofs] - self.default_dof_angles
         current_obs_buffer_dict["dof_vel"] = robot_state_data[
             :, 7 + self.num_dofs + 6 : 7 + self.num_dofs + 6 + self.num_dofs
         ]
 
-        # Calculate projected gravity
-        v = np.array([[0, 0, -1]])
-        current_obs_buffer_dict["projected_gravity"] = quat_rotate_inverse(current_obs_buffer_dict["base_quat"], v)
+        # Use pre-computed corrected gravity if available from interface, else compute
+        # This logic seems very brittle. TODO: Return a dataclass instead of just a numpy array.
+        expected_len = (
+            7 + self.num_dofs + 6 + self.num_dofs
+        )  # base_pos(3) + quat(4) + dof_pos + lin_vel(3) + ang_vel(3) + dof_vel
+        if self.config.task.debug.force_upright_imu:
+            current_obs_buffer_dict["projected_gravity"] = np.array([[0.0, 0.0, -1.0]])
+        elif robot_state_data.shape[1] == expected_len + 3:
+            current_obs_buffer_dict["projected_gravity"] = robot_state_data[:, expected_len : expected_len + 3]
+        else:
+            v = np.array([[0, 0, -1]])
+            current_obs_buffer_dict["projected_gravity"] = quat_rotate_inverse(current_obs_buffer_dict["base_quat"], v)
 
         return current_obs_buffer_dict
 
@@ -493,6 +561,7 @@ class BasePolicy:
         """Return flattened observations per group with history applied per term."""
         current_obs_buffer_dict = self.get_current_obs_buffer_dict(robot_state_data)
         current_obs_dict = self.parse_current_obs_dict(current_obs_buffer_dict)
+
         return self._update_obs_history(current_obs_dict)
 
     def _update_obs_history(self, current_obs_dict: dict[str, dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
@@ -553,6 +622,10 @@ class BasePolicy:
     def policy_action(self):
         """Execute policy action and send commands to robot."""
 
+        # Snapshot flags to prevent race with mode-switch handler thread
+        use_policy = self.use_policy_action
+        get_ready = self.get_ready_state
+
         kp_override = None
         kd_override = None
 
@@ -563,10 +636,10 @@ class BasePolicy:
         # Stage 2: Pre-processing
         with self.latency_tracker.measure("preprocessing"):
             # Determine target joint positions
-            if self.get_ready_state:
+            if get_ready:
                 q_target = self.get_init_target(robot_state_data)
                 self.init_count = min(self.init_count, 500)
-            elif not self.use_policy_action:
+            elif not use_policy:
                 manual_cmd = self._get_manual_command(robot_state_data)
                 if manual_cmd is not None:
                     q_target = manual_cmd["q"]
@@ -579,13 +652,13 @@ class BasePolicy:
                 pass
 
         # Stage 3: Inference
-        if self.use_policy_action and not self.get_ready_state:
+        if use_policy and not get_ready:
             with self.latency_tracker.measure("inference"):
                 scaled_policy_action = self.rl_inference(robot_state_data)
 
         # Stage 4: Post-processing
         with self.latency_tracker.measure("postprocessing"):
-            if self.use_policy_action and not self.get_ready_state:
+            if use_policy and not get_ready:
                 if scaled_policy_action.shape[1] != self.num_dofs:
                     if not self.upper_body_controller:
                         scaled_policy_action = np.concatenate(
@@ -596,7 +669,7 @@ class BasePolicy:
                 q_target = scaled_policy_action + self.default_dof_angles
 
             # Prepare command (reuse pre-allocated arrays)
-            self.cmd_q[:] = q_target[0]
+            self.cmd_q[:] = q_target
 
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
@@ -648,19 +721,16 @@ class BasePolicy:
             self.logger.warning("Keyboard input will not be available")
 
     def process_joystick_input(self):
-        """Process joystick input and update commands using InterfaceWrapper."""
-        # Handle stick input
-        self.lin_vel_command, self.ang_vel_command, _ = self.interface.process_joystick_input(
+        """Process joystick input and update commands using interface."""
+        # Store previous key states for edge detection
+        self.last_key_states = self.key_states.copy() if hasattr(self, "key_states") else {}
+
+        # Process joystick input - returns (lin_vel, ang_vel, key_states)
+        self.lin_vel_command, self.ang_vel_command, self.key_states = self.interface.process_joystick_input(
             self.lin_vel_command, self.ang_vel_command, self.stand_command, False
         )
-        # Robust key state tracking: update all key states every frame
-        self.last_key_states = self.key_states.copy() if hasattr(self, "key_states") else {}
-        # Build new key_states: all keys False except the current one
-        new_key_states = dict.fromkeys(self.interface._wc_key_map.values(), False)
-        cur_key = self.interface.get_joystick_key()
-        if cur_key:
-            new_key_states[cur_key] = True
-        self.key_states = new_key_states
+
+        # Handle button presses (edge detection: only trigger on press, not hold)
         for key, is_pressed in self.key_states.items():
             if is_pressed and not self.last_key_states.get(key, False):
                 self.handle_joystick_button(key)
@@ -749,7 +819,6 @@ class BasePolicy:
 
     def _handle_joystick_kp_control(self, keycode):
         """Handle joystick KP control."""
-        print(keycode)
         if keycode == "down":
             self.interface.kp_level -= 0.1
         elif keycode == "up":

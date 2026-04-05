@@ -9,6 +9,7 @@ import tyro
 from holosoma.config_types.viewer import ViewerConfig
 from pydantic import model_validator
 from pydantic.dataclasses import dataclass
+from typing_extensions import Annotated
 
 
 class MujocoBackend(str, Enum):
@@ -387,11 +388,11 @@ class SceneConfig:
     asset_root: str | None = None
     """Optional root directory for relative asset paths."""
 
-    scene_files: Annotated[list[SceneFileConfig] | None, tyro.conf.Suppress] = None  # Renamed from sources
-    """List of scene files (USD/URDF) to load."""
+    scene_files: Annotated[list[SceneFileConfig] | None, tyro.conf.Suppress] = None
+    """List of scene files (USD/URDF) to load. Set programmatically, not via CLI."""
 
     rigid_objects: Annotated[list[RigidObjectConfig] | None, tyro.conf.Suppress] = None
-    """Standalone rigid objects to instantiate."""
+    """Standalone rigid objects to instantiate. Set programmatically, not via CLI."""
 
     env_spacing: float = 20.0
     """Distance between parallel environments in the grid layout."""

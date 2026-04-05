@@ -1,9 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Exit on error, and print commands
 set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR=$(dirname "$SCRIPT_DIR")
+
+if ! command -v sudo &> /dev/null; then
+  # in docker build sudo isn't avaiable, but its ok
+  echo "Warning: sudo could not be found, you may need to run this script with sudo"
+  function sudo { "$@"; }
+  export -f sudo
+fi
 
 # MuJoCo Warp version to install -- the repo is missing version tags and branches
 # Arbitrarily chosen from mainline at the time we've ~tested against
@@ -35,7 +42,7 @@ while [[ $# -gt 0 ]]; do
       echo "  # Setup without GPU acceleration (CPU-only)"
       echo "  $0 --no-warp"
       echo ""
-      echo "Note: GPU acceleration requires NVIDIA driver >= 550.54.14"
+      echo "Note: GPU acceleration requires NVIDIA driver >= 555.58.02"
       exit 0
       ;;
     *)
@@ -66,6 +73,10 @@ WARP_SENTINEL_FILE=${WORKSPACE_DIR}/.env_setup_finished_$CONDA_ENV_NAME_warp
 mkdir -p $WORKSPACE_DIR
 
 if [[ ! -f $SENTINEL_FILE ]]; then
+  # Detect OS and architecture
+  OS_NAME="$(uname -s)"
+  ARCH_NAME="$(uname -m)"
+
   # Install miniconda (reuse existing logic)
   if [[ ! -d $CONDA_ROOT ]]; then
     mkdir -p $CONDA_ROOT
@@ -133,7 +144,7 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   echo "Installing Holosoma packages"
   pip install -U pip
   if [[ "$OS_NAME" == "Linux" ]]; then
-    pip install -e "$ROOT_DIR/src/holosoma[unitree,booster]"
+    pip install -e "$ROOT_DIR/src/holosoma[unitree, booster]"
   elif [[ "$OS_NAME" == "Darwin" ]]; then
     echo "Warning: only unitree support for osx"
     pip install -e "$ROOT_DIR/src/holosoma[unitree]"
@@ -216,7 +227,7 @@ if [[ "$INSTALL_WARP" == "true" ]] && [[ ! -f $WARP_SENTINEL_FILE ]]; then
   source $CONDA_ROOT/bin/activate $CONDA_ENV_NAME
 
   # Check NVIDIA driver version (required for CUDA 12.4+)
-  MIN_DRIVER_VERSION="550.54.14"
+  MIN_DRIVER_VERSION="555.58.02"
   DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1)
 
   # Check if driver exists and meets minimum version
@@ -238,7 +249,7 @@ if [[ "$INSTALL_WARP" == "true" ]] && [[ ! -f $WARP_SENTINEL_FILE ]]; then
     echo "Install/Upgrade NVIDIA driver:"
     echo "  1. Check available drivers: ubuntu-drivers devices"
     echo "  2. Install recommended:    sudo ubuntu-drivers install"
-    echo "  3. Or install specific:    sudo ubuntu-drivers install nvidia:550"
+    echo "  3. Or install specific:    sudo ubuntu-drivers install nvidia:590"
     echo "  4. Reboot:                 sudo reboot"
     echo ""
     echo "Reference: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/"

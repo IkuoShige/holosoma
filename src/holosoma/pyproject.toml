@@ -20,7 +20,7 @@ dependencies = [
     "mypy==1.14.1",
     "notebook",
     "numpy-stl",
-    "numpy==1.23.5",
+    "numpy>=1.23.5,<2",
     "omegaconf",  # Used for config resolvers and DictConfig type hints
     "onnx",
     "onnxruntime",
@@ -45,7 +45,7 @@ dependencies = [
     "types-requests",
     "types-tqdm",
     "tyro>=1.0.0",
-    "wandb>=0.23.0", # Updated to support 86-character API keys
+    "wandb==0.22.0", # pin version until https://github.com/wandb/wandb/issues/10647 is fixed
     "warp-lang==1.10.0",
     "yourdfpy>=0.0.58",
     "zmq",
@@ -54,6 +54,10 @@ dependencies = [
 
 # Mark optional-dependencies as dynamic since it needs runtime computation
 dynamic = ["optional-dependencies"]
+
+[project.entry-points."holosoma.bridge"]
+unitree = "holosoma.bridge.unitree:UnitreeSdk2Bridge"
+booster = "holosoma.bridge.booster:BoosterSdk2Bridge"
 
 [tool.setuptools.packages.find]
 where = ["."]
