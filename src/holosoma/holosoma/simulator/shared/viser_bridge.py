@@ -164,6 +164,7 @@ class ViserBridge:
             self._scene.create_overlay_gui()
         with tab_group.add_tab("Groups"):
             self._scene.create_groups_gui()
+        self._setup_checkpoints_tab(tab_group)
 
         logger.info(f"ViserBridge: http://{config.host}:{config.port}")
 
@@ -356,14 +357,17 @@ class ViserBridge:
     # ================================================================
 
     def _setup_rewards_tab(self, tab_group) -> None:
+        import colorsys
+
         import viser as _viser
 
         try:
             with tab_group.add_tab("Rewards"):
-                self._server.gui.add_markdown("### Episode Reward (env 0)")
+                # Total reward plot
+                self._server.gui.add_markdown("### Total Reward")
                 series = (
                     _viser.uplot.Series(label="step"),
-                    _viser.uplot.Series(label="Reward", stroke="rgb(0, 150, 255)", width=2),
+                    _viser.uplot.Series(label="Total", stroke="rgb(0, 150, 255)", width=2),
                 )
                 self._reward_plot_handle = self._server.gui.add_uplot(
                     data=(np.array([0.0], dtype=np.float32), np.array([0.0], dtype=np.float32)),
@@ -375,19 +379,147 @@ class ViserBridge:
                     legend=_viser.uplot.Legend(show=False),
                     aspect=1.5,
                 )
+
+                # Per-term reward plots (created dynamically on first push)
+                self._term_plots_folder = self._server.gui.add_folder(
+                    "Per-Term Rewards", expand_by_default=True
+                )
+                self._term_plot_handles: dict[str, object] = {}
+                self._term_histories: dict[str, deque] = {}
+                self._term_colors: dict[str, str] = {}
+                self._term_plots_initialized = False
         except Exception as e:
             logger.debug(f"ViserBridge: could not create reward plot: {e}")
             self._reward_plot_handle = None
+
+    def _init_term_plots(self, term_names: list[str]) -> None:
+        """Create per-term reward plots on first reward push."""
+        import colorsys
+
+        import viser as _viser
+
+        with self._term_plots_folder:
+            for i, name in enumerate(term_names):
+                hue = i / max(1, len(term_names))
+                r, g, b = colorsys.hsv_to_rgb(hue, 0.8, 0.9)
+                color = f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})"
+                self._term_colors[name] = color
+                self._term_histories[name] = deque(maxlen=_REWARD_HISTORY_LEN)
+
+                self._server.gui.add_markdown(
+                    f"<span style='color:{color}'>**{name}**</span>"
+                )
+                series = (
+                    _viser.uplot.Series(label="step"),
+                    _viser.uplot.Series(label=name, stroke=color, width=2),
+                )
+                self._term_plot_handles[name] = self._server.gui.add_uplot(
+                    data=(np.array([0.0], dtype=np.float32), np.array([0.0], dtype=np.float32)),
+                    series=series,
+                    scales={
+                        "x": _viser.uplot.Scale(time=False, auto=True),
+                        "y": _viser.uplot.Scale(auto=True),
+                    },
+                    legend=_viser.uplot.Legend(show=False),
+                    aspect=1.0,
+                )
+        self._term_plots_initialized = True
+
+    # ================================================================
+    # GUI — Checkpoints tab
+    # ================================================================
+
+    def _setup_checkpoints_tab(self, tab_group) -> None:
+        """Checkpoint selector for hot-swapping during eval."""
+        import viser as _viser
+
+        self._checkpoint_load_callback = None
+        self._checkpoint_dropdown = None
+
+        try:
+            with tab_group.add_tab("Checkpoints"):
+                self._server.gui.add_markdown("### Load Checkpoint")
+                self._checkpoint_dropdown = self._server.gui.add_dropdown(
+                    "Checkpoint", options=["(scanning...)"],
+                )
+                btn_refresh = self._server.gui.add_button("Refresh", icon=_viser.Icon.REFRESH)
+                btn_load = self._server.gui.add_button("Load", icon=_viser.Icon.DOWNLOAD)
+                self._checkpoint_status = self._server.gui.add_markdown("*Select a checkpoint*")
+
+                @btn_refresh.on_click
+                def _(_: _viser.GuiEvent) -> None:
+                    self._scan_checkpoints()
+
+                @btn_load.on_click
+                def _(_: _viser.GuiEvent) -> None:
+                    if self._checkpoint_load_callback and self._checkpoint_dropdown:
+                        path = self._checkpoint_dropdown.value
+                        if path and path != "(no checkpoints)":
+                            self._checkpoint_status.content = f"Loading **{os.path.basename(path)}**..."
+                            try:
+                                self._checkpoint_load_callback(path)
+                                self._checkpoint_status.content = f"Loaded **{os.path.basename(path)}**"
+                            except Exception as e:
+                                self._checkpoint_status.content = f"**Error:** {e}"
+
+                # Initial scan
+                self._scan_checkpoints()
+        except Exception as e:
+            logger.debug(f"ViserBridge: could not create checkpoints tab: {e}")
+
+    def _scan_checkpoints(self) -> None:
+        """Scan log directory for .pt checkpoint files."""
+        if self._checkpoint_dropdown is None:
+            return
+        # Try to find log directory from simulator's training config
+        log_dir = getattr(self._simulator, "training_config", None)
+        if log_dir is not None:
+            log_dir = getattr(log_dir, "log_dir", None)
+
+        # Also check common patterns
+        search_dirs = []
+        if log_dir and os.path.isdir(str(log_dir)):
+            search_dirs.append(str(log_dir))
+        # Search in current working dir / logs
+        for candidate in ["logs", "."]:
+            if os.path.isdir(candidate):
+                search_dirs.append(candidate)
+
+        checkpoints = []
+        for d in search_dirs:
+            for root, _dirs, files in os.walk(d):
+                for f in sorted(files):
+                    if f.endswith(".pt"):
+                        checkpoints.append(os.path.join(root, f))
+
+        if checkpoints:
+            # Show most recent first
+            checkpoints = sorted(checkpoints, key=os.path.getmtime, reverse=True)[:20]
+            self._checkpoint_dropdown.options = checkpoints
+        else:
+            self._checkpoint_dropdown.options = ["(no checkpoints)"]
+
+    def set_checkpoint_loader(self, callback) -> None:
+        """Register a callback to load checkpoints: callback(path: str) -> None."""
+        self._checkpoint_load_callback = callback
 
     # ================================================================
     # Public API — push data from eval loop
     # ================================================================
 
-    def push_rewards(self, rewards: np.ndarray | float) -> None:
-        """Push per-step reward for env 0 into history (call from eval loop)."""
+    def push_rewards(self, rewards: np.ndarray | float, term_rewards: dict[str, float] | None = None) -> None:
+        """Push per-step rewards into history for plotting."""
         r = float(rewards[0]) if hasattr(rewards, "__getitem__") else float(rewards)
         self._reward_history.append(r)
         self._reward_timesteps.append(float(self._total_steps))
+
+        # Per-term rewards
+        if term_rewards and hasattr(self, "_term_plots_initialized"):
+            if not self._term_plots_initialized:
+                self._init_term_plots(list(term_rewards.keys()))
+            for name, val in term_rewards.items():
+                if name in self._term_histories:
+                    self._term_histories[name].append(float(val))
 
     # ================================================================
     # Update
@@ -449,11 +581,23 @@ class ViserBridge:
             self._info_handle.content = self._build_info_text()
 
     def _update_reward_plot(self) -> None:
-        if self._reward_plot_handle is None or len(self._reward_timesteps) < 2:
+        if len(self._reward_timesteps) < 2:
             return
         t = np.array(self._reward_timesteps, dtype=np.float32)
-        r = np.array(self._reward_history, dtype=np.float32)
-        self._reward_plot_handle.data = (t, r)
+
+        # Total reward
+        if self._reward_plot_handle is not None:
+            r = np.array(self._reward_history, dtype=np.float32)
+            self._reward_plot_handle.data = (t, r)
+
+        # Per-term rewards
+        if hasattr(self, "_term_plot_handles"):
+            for name, handle in self._term_plot_handles.items():
+                if name in self._term_histories and len(self._term_histories[name]) >= 2:
+                    tr = np.array(self._term_histories[name], dtype=np.float32)
+                    # Align lengths (term history may be shorter than timesteps)
+                    n = min(len(t), len(tr))
+                    handle.data = (t[-n:], tr[-n:])
 
     def _compute_scene_offset(self) -> np.ndarray:
         """Compute scene offset from shadow mj_data (matches mjviser's internal tracking)."""
