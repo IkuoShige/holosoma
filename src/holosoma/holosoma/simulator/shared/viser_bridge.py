@@ -137,9 +137,9 @@ class ViserBridge:
         import tempfile
         mjcf_dir = os.path.dirname(mjcf_path)
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".xml", dir=mjcf_dir, delete=False
+            mode="wb", suffix=".xml", dir=mjcf_dir, delete=False
         ) as tmp:
-            tree.write(tmp, xml_declaration=True)
+            tree.write(tmp, xml_declaration=True, encoding="utf-8")
             tmp_path = tmp.name
 
         try:
