@@ -530,6 +530,13 @@ class BaseSimulator:
         if self.viser_bridge is not None:
             self.viser_bridge.update()
 
+    def push_viser_rewards(self, rewards) -> None:
+        """Push reward data to viser viewer for plotting (call from env.step)."""
+        if self.viser_bridge is not None:
+            import torch
+            r = rewards.detach().cpu().numpy() if isinstance(rewards, torch.Tensor) else rewards
+            self.viser_bridge.push_rewards(r)
+
     # ----- Video Recording Interface -----
     def on_episode_start(self, env_id: int = 0) -> None:
         """Called when an episode starts.

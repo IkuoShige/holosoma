@@ -1,13 +1,11 @@
 """ViserBridge: simulator-agnostic bridge to mjviser web-based 3D viewer.
 
-Always uses a **shadow MuJoCo model** (robot-only) so the visualization
-works identically for all backends.  Each frame copies simulator state
-into shadow ``mj_data.qpos``, runs ``mj_forward``, and lets mjviser render.
+Uses a shadow MuJoCo model (robot-only) + mjviser for all backends.
 
-Features:
-  - Full mjviser GUI (Scene / Overlay / Groups tabs)
-  - mjlab-style 3D velocity arrows (shaft + cone head) above robot head
-  - Controls tab: play/pause, speed, velocity joystick, info
+GUI tabs (mjlab-style):
+  - Scene / Visualization / Groups — from mjviser
+  - Controls — play/pause, step info, speed, velocity arrows, joystick
+  - Rewards — live reward time-series plots
 
 Requires: ``pip install mjviser``
 """
@@ -16,6 +14,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import deque
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -29,20 +28,19 @@ if TYPE_CHECKING:
     from holosoma.config_types.viser import ViserBridgeConfig
     from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
 
-# Arrow geometry constants (mjlab style)
-_ARROW_SHAFT_RATIO = 0.8  # shaft = 80% of total length
-_ARROW_HEAD_RATIO = 0.2  # head = 20%
+_ARROW_SHAFT_RATIO = 0.8
+_ARROW_HEAD_RATIO = 0.2
 _ARROW_WIDTH = 0.015
 _Z_AXIS = np.array([0.0, 0.0, 1.0])
+_REWARD_HISTORY_LEN = 200
 
 
 def _rotation_between(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
-    """Quaternion (wxyz) rotating *src* onto *dst* (both unit vectors)."""
+    """Quaternion (wxyz) rotating *src* onto *dst*."""
     c = np.dot(src, dst)
     if c > 1.0 - 1e-8:
         return np.array([1.0, 0.0, 0.0, 0.0])
     if c < -1.0 + 1e-8:
-        # 180-degree rotation around any perpendicular axis
         perp = np.array([1, 0, 0]) if abs(src[0]) < 0.9 else np.array([0, 1, 0])
         axis = np.cross(src, perp)
         axis /= np.linalg.norm(axis)
@@ -53,61 +51,43 @@ def _rotation_between(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
-def _make_shaft_mesh() -> trimesh.Trimesh:
-    """Unit cylinder with base at origin, extending +Z."""
-    m = trimesh.creation.cylinder(radius=1.0, height=1.0, sections=12)
-    m.apply_translation([0, 0, 0.5])
-    return m
-
-
-def _make_head_mesh() -> trimesh.Trimesh:
-    """Unit cone with base at origin, pointing +Z."""
-    m = trimesh.creation.cone(radius=2.0, height=1.0, sections=12)
-    return m
+def _colored_mesh(mesh: trimesh.Trimesh, rgba: tuple[int, int, int, int]) -> trimesh.Trimesh:
+    mesh.visual.face_colors = [rgba] * len(mesh.faces)
+    return mesh
 
 
 class _Arrow3D:
-    """A single 3D arrow (shaft cylinder + cone head) in the viser scene."""
+    """3D arrow (cylinder shaft + cone head) in the viser scene."""
 
-    def __init__(self, server: viser.ViserServer, name: str, color: tuple[int, int, int]):
-        shaft = _make_shaft_mesh()
-        shaft.visual.face_colors = [(*color, 200)] * len(shaft.faces)
-        head = _make_head_mesh()
-        head.visual.face_colors = [(*color, 200)] * len(head.faces)
-        self._shaft = server.scene.add_mesh_trimesh(f"{name}/shaft", shaft)
-        self._head = server.scene.add_mesh_trimesh(f"{name}/head", head)
+    def __init__(self, server: viser.ViserServer, name: str, rgba: tuple[int, int, int, int]):
+        shaft = trimesh.creation.cylinder(radius=1.0, height=1.0, sections=12)
+        shaft.apply_translation([0, 0, 0.5])
+        head = trimesh.creation.cone(radius=2.0, height=1.0, sections=12)
+        self._shaft = server.scene.add_mesh_trimesh(f"{name}/shaft", _colored_mesh(shaft, rgba))
+        self._head = server.scene.add_mesh_trimesh(f"{name}/head", _colored_mesh(head, rgba))
         self.visible = True
 
-    def update(self, start: np.ndarray, end: np.ndarray, scene_offset: np.ndarray) -> None:
-        s = start + scene_offset
-        e = end + scene_offset
+    def update(self, start: np.ndarray, end: np.ndarray, offset: np.ndarray) -> None:
+        s, e = start + offset, end + offset
         d = e - s
         length = float(np.linalg.norm(d))
-
         if length < 1e-4:
             self._shaft.visible = False
             self._head.visible = False
             return
-
         self._shaft.visible = self.visible
         self._head.visible = self.visible
         if not self.visible:
             return
-
         direction = d / length
         q = _rotation_between(_Z_AXIS, direction)
-
-        shaft_len = _ARROW_SHAFT_RATIO * length
-        head_len = _ARROW_HEAD_RATIO * length
         w = _ARROW_WIDTH
-
         self._shaft.position = s
         self._shaft.wxyz = q
-        self._shaft.scale = (w, w, shaft_len)
-
-        self._head.position = s + direction * shaft_len
+        self._shaft.scale = (w, w, _ARROW_SHAFT_RATIO * length)
+        self._head.position = s + direction * _ARROW_SHAFT_RATIO * length
         self._head.wxyz = q
-        self._head.scale = (w, w, head_len)
+        self._head.scale = (w, w, _ARROW_HEAD_RATIO * length)
 
     def set_visible(self, v: bool) -> None:
         self.visible = v
@@ -131,39 +111,51 @@ class ViserBridge:
         self._simulator = simulator
         self._config = config
         self._step_count = 0
+        self._total_steps = 0
         self._last_update_time = 0.0
         self._min_update_interval = 1.0 / max(config.fps_limit, 1)
+        self._fps_counter_time = time.monotonic()
+        self._fps_counter_frames = 0
+        self._current_fps = 0.0
 
         # Shadow model
         self._mj_model, self._mj_data = self._create_shadow_model()
         self._resolve_shadow_addressing()
-        mapped = len([a for a in self._shadow_dof_addrs if a >= 0])
-        logger.info(f"ViserBridge: shadow model ({mapped}/{simulator.num_dof} DOFs)")
+        self._mapped_dofs = len([a for a in self._shadow_dof_addrs if a >= 0])
 
         # Viser server + mjviser scene
         self._server = _viser.ViserServer(host=config.host, port=config.port)
         self._scene = ViserMujocoScene(self._server, self._mj_model, num_envs=1)
 
-        # mjviser GUI tabs
+        # mjviser GUI tabs (Scene / Visualization / Groups)
         tab_group = self._scene.create_visualization_gui(
             camera_distance=3.0, camera_azimuth=150.0, camera_elevation=25.0,
         )
 
-        # 3D arrows (mjlab style: shaft + cone head)
-        self._arrow_cmd_lin = _Arrow3D(self._server, "/arrows/cmd_lin", (50, 70, 230))
-        self._arrow_cmd_ang = _Arrow3D(self._server, "/arrows/cmd_ang", (50, 150, 50))
-        self._arrow_actual_lin = _Arrow3D(self._server, "/arrows/actual_lin", (0, 150, 255))
-        self._arrow_actual_ang = _Arrow3D(self._server, "/arrows/actual_ang", (0, 230, 100))
+        # 3D arrows
+        self._arrow_cmd_lin = _Arrow3D(self._server, "/arrows/cmd_lin", (50, 70, 230, 200))
+        self._arrow_cmd_ang = _Arrow3D(self._server, "/arrows/cmd_ang", (50, 150, 50, 200))
+        self._arrow_actual_lin = _Arrow3D(self._server, "/arrows/actual_lin", (0, 150, 255, 180))
+        self._arrow_actual_ang = _Arrow3D(self._server, "/arrows/actual_ang", (0, 230, 100, 180))
         self._velocity_scale = 0.5
         self._show_velocity = True
         self._vel_z_offset = 0.2
 
-        # Holosoma controls tab
+        # Velocity joystick state
         self._vel_joystick_enabled = False
         self._vel_joystick_vx = 0.0
         self._vel_joystick_vy = 0.0
         self._vel_joystick_yaw = 0.0
+
+        # Reward tracking
+        self._reward_history: deque[float] = deque(maxlen=_REWARD_HISTORY_LEN)
+        self._reward_timesteps: deque[float] = deque(maxlen=_REWARD_HISTORY_LEN)
+        self._reward_plot_handle = None
+
+        # GUI
+        self._info_handle = None
         self._setup_controls_tab(tab_group)
+        self._setup_rewards_tab(tab_group)
 
         logger.info(f"ViserBridge: http://{config.host}:{config.port}")
 
@@ -173,13 +165,12 @@ class ViserBridge:
 
     def _create_shadow_model(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
         import mujoco as mj
-        from xml.etree import ElementTree as ET
         import tempfile
+        from xml.etree import ElementTree as ET
 
         mjcf_path = self._resolve_mjcf_path()
         tree = ET.parse(mjcf_path)
         root = tree.getroot()
-
         worldbody = root.find("worldbody")
         if worldbody is None:
             worldbody = ET.SubElement(root, "worldbody")
@@ -187,19 +178,14 @@ class ViserBridge:
             "name": "floor", "type": "plane", "size": "10 10 0.01",
             "rgba": "0 0 0 0", "contype": "1", "conaffinity": "1",
         })
-
         mjcf_dir = os.path.dirname(mjcf_path)
-        with tempfile.NamedTemporaryFile(
-            mode="wb", suffix=".xml", dir=mjcf_dir, delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".xml", dir=mjcf_dir, delete=False) as tmp:
             tree.write(tmp, xml_declaration=True, encoding="utf-8")
             tmp_path = tmp.name
-
         try:
             model = mj.MjModel.from_xml_path(tmp_path)
         finally:
             os.unlink(tmp_path)
-
         return model, mj.MjData(model)
 
     def _resolve_mjcf_path(self) -> str:
@@ -212,18 +198,14 @@ class ViserBridge:
     def _resolve_shadow_addressing(self) -> None:
         import mujoco as mj
         model = self._mj_model
-
-        if model.njnt > 0 and model.jnt_type[0] == mj.mjtJoint.mjJNT_FREE:
-            self._shadow_qpos_root_addr: int | None = model.jnt_qposadr[0]
-        else:
-            self._shadow_qpos_root_addr = None
-
+        self._shadow_qpos_root_addr: int | None = (
+            model.jnt_qposadr[0] if model.njnt > 0 and model.jnt_type[0] == mj.mjtJoint.mjJNT_FREE else None
+        )
         shadow_joint_map: dict[str, int] = {}
         for jnt_id in range(model.njnt):
             jnt_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id)
             if jnt_name and model.jnt_type[jnt_id] != mj.mjtJoint.mjJNT_FREE:
                 shadow_joint_map[jnt_name] = model.jnt_qposadr[jnt_id]
-
         self._shadow_dof_addrs: list[int] = []
         for sim_name in self._simulator.dof_names:
             addr = shadow_joint_map.get(sim_name)
@@ -238,9 +220,7 @@ class ViserBridge:
 
     def _sync_shadow_state(self) -> None:
         import mujoco as mj
-        sim = self._simulator
-        data = self._mj_data
-
+        sim, data = self._simulator, self._mj_data
         root_state = sim.robot_root_states[0].detach().cpu().numpy()
         if self._shadow_qpos_root_addr is not None:
             a = self._shadow_qpos_root_addr
@@ -249,16 +229,14 @@ class ViserBridge:
             data.qpos[a + 4] = root_state[3]  # qx
             data.qpos[a + 5] = root_state[4]  # qy
             data.qpos[a + 6] = root_state[5]  # qz
-
         dof_pos = sim.dof_pos[0].detach().cpu().numpy()
         for sim_idx, qpos_addr in enumerate(self._shadow_dof_addrs):
             if qpos_addr >= 0:
                 data.qpos[qpos_addr] = dof_pos[sim_idx]
-
         mj.mj_forward(self._mj_model, data)
 
     # ================================================================
-    # GUI
+    # GUI — Controls tab
     # ================================================================
 
     def _setup_controls_tab(self, tab_group) -> None:
@@ -267,22 +245,39 @@ class ViserBridge:
         server = self._server
 
         with tab_group.add_tab("Controls"):
+            # --- Info panel ---
+            with server.gui.add_folder("Info", expand_by_default=True):
+                self._info_handle = server.gui.add_markdown(self._build_info_text())
+
+            # --- Simulation ---
+            with server.gui.add_folder("Simulation", expand_by_default=True):
+                btn_pause = server.gui.add_button("Pause", icon=_viser.Icon.PLAYER_PAUSE)
+                btn_play = server.gui.add_button("Play", icon=_viser.Icon.PLAYER_PLAY, visible=False)
+
+                @btn_pause.on_click
+                def _(_: _viser.GuiEvent) -> None:
+                    self._scene.paused = True
+                    btn_pause.visible = False
+                    btn_play.visible = True
+
+                @btn_play.on_click
+                def _(_: _viser.GuiEvent) -> None:
+                    self._scene.paused = False
+                    btn_play.visible = False
+                    btn_pause.visible = True
+
             # --- Velocity arrows ---
             with server.gui.add_folder("Velocity Arrows", expand_by_default=True):
                 cb_show = server.gui.add_checkbox("Show", initial_value=True)
-                sl_scale = server.gui.add_slider(
-                    "Scale", min=0.1, max=3.0, step=0.1, initial_value=0.5,
-                )
-                sl_z = server.gui.add_slider(
-                    "Height offset", min=0.0, max=1.0, step=0.05, initial_value=0.2,
-                )
+                sl_scale = server.gui.add_slider("Scale", min=0.1, max=3.0, step=0.1, initial_value=0.5)
+                sl_z = server.gui.add_slider("Height", min=0.0, max=1.0, step=0.05, initial_value=0.2)
 
                 @cb_show.on_update
                 def _(_: _viser.GuiEvent) -> None:
                     self._show_velocity = cb_show.value
-                    for arr in (self._arrow_cmd_lin, self._arrow_cmd_ang,
-                                self._arrow_actual_lin, self._arrow_actual_ang):
-                        arr.set_visible(cb_show.value)
+                    for a in (self._arrow_cmd_lin, self._arrow_cmd_ang,
+                              self._arrow_actual_lin, self._arrow_actual_ang):
+                        a.set_visible(cb_show.value)
 
                 @sl_scale.on_update
                 def _(_: _viser.GuiEvent) -> None:
@@ -292,15 +287,13 @@ class ViserBridge:
                 def _(_: _viser.GuiEvent) -> None:
                     self._vel_z_offset = sl_z.value
 
-                # Legend
                 server.gui.add_markdown(
-                    "**Blue** = cmd linear &nbsp; **Green** = cmd angular\n\n"
-                    "**Cyan** = actual linear &nbsp; **Lime** = actual angular"
+                    "🔵 cmd lin &nbsp; 🟢 cmd ang\n\n🔷 actual lin &nbsp; 🟩 actual ang"
                 )
 
             # --- Velocity joystick ---
-            with server.gui.add_folder("Velocity Joystick", expand_by_default=False):
-                cb_joy = server.gui.add_checkbox("Enable override", initial_value=False)
+            with server.gui.add_folder("Commands", expand_by_default=False):
+                cb_joy = server.gui.add_checkbox("Enable joystick", initial_value=False)
                 sl_vx = server.gui.add_slider("lin_vel_x", min=-2.0, max=2.0, step=0.05, initial_value=0.0)
                 sl_vy = server.gui.add_slider("lin_vel_y", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
                 sl_yaw = server.gui.add_slider("ang_vel_z", min=-2.0, max=2.0, step=0.05, initial_value=0.0)
@@ -324,22 +317,56 @@ class ViserBridge:
 
                 @btn_zero.on_click
                 def _(_: _viser.GuiEvent) -> None:
-                    sl_vx.value = 0.0
-                    sl_vy.value = 0.0
-                    sl_yaw.value = 0.0
-                    self._vel_joystick_vx = 0.0
-                    self._vel_joystick_vy = 0.0
-                    self._vel_joystick_yaw = 0.0
+                    sl_vx.value = sl_vy.value = sl_yaw.value = 0.0
+                    self._vel_joystick_vx = self._vel_joystick_vy = self._vel_joystick_yaw = 0.0
 
-            # --- Info ---
-            with server.gui.add_folder("Info"):
-                server.gui.add_markdown(
-                    f"**Simulator:** {type(self._simulator).__name__}\n\n"
-                    f"**DOFs:** {len([a for a in self._shadow_dof_addrs if a >= 0])}"
-                    f"/{self._simulator.num_dof}\n\n"
-                    f"**FPS limit:** {self._config.fps_limit}\n\n"
-                    f"**Update freq:** every {self._config.update_freq} steps"
+    def _build_info_text(self) -> str:
+        status = "⏸ Paused" if self._scene.paused else "▶ Running"
+        return (
+            f"**Status:** {status}\n\n"
+            f"**Step:** {self._total_steps}\n\n"
+            f"**FPS:** {self._current_fps:.0f}\n\n"
+            f"**Simulator:** {type(self._simulator).__name__}\n\n"
+            f"**DOFs:** {self._mapped_dofs}/{self._simulator.num_dof}"
+        )
+
+    # ================================================================
+    # GUI — Rewards tab
+    # ================================================================
+
+    def _setup_rewards_tab(self, tab_group) -> None:
+        import viser as _viser
+
+        try:
+            with tab_group.add_tab("Rewards"):
+                self._server.gui.add_markdown("### Episode Reward (env 0)")
+                series = (
+                    _viser.uplot.Series(label="step"),
+                    _viser.uplot.Series(label="Reward", stroke="rgb(0, 150, 255)", width=2),
                 )
+                self._reward_plot_handle = self._server.gui.add_uplot(
+                    data=(np.array([0.0], dtype=np.float32), np.array([0.0], dtype=np.float32)),
+                    series=series,
+                    scales={
+                        "x": _viser.uplot.Scale(time=False, auto=True),
+                        "y": _viser.uplot.Scale(auto=True),
+                    },
+                    legend=_viser.uplot.Legend(show=False),
+                    aspect=1.5,
+                )
+        except Exception as e:
+            logger.debug(f"ViserBridge: could not create reward plot: {e}")
+            self._reward_plot_handle = None
+
+    # ================================================================
+    # Public API — push data from eval loop
+    # ================================================================
+
+    def push_rewards(self, rewards: np.ndarray | float) -> None:
+        """Push per-step reward for env 0 into history (call from eval loop)."""
+        r = float(rewards[0]) if hasattr(rewards, "__getitem__") else float(rewards)
+        self._reward_history.append(r)
+        self._reward_timesteps.append(float(self._total_steps))
 
     # ================================================================
     # Update
@@ -347,6 +374,7 @@ class ViserBridge:
 
     def update(self) -> None:
         self._step_count += 1
+        self._total_steps += 1
         if self._step_count % self._config.update_freq != 0:
             return
         if self._scene.paused:
@@ -356,7 +384,15 @@ class ViserBridge:
             return
         self._last_update_time = now
 
-        # Apply velocity joystick override
+        # FPS counter
+        self._fps_counter_frames += 1
+        elapsed = now - self._fps_counter_time
+        if elapsed >= 1.0:
+            self._current_fps = self._fps_counter_frames / elapsed
+            self._fps_counter_frames = 0
+            self._fps_counter_time = now
+
+        # Apply joystick
         if self._vel_joystick_enabled:
             self._apply_joystick_override()
 
@@ -366,9 +402,10 @@ class ViserBridge:
             self._scene.update_from_mjdata(self._mj_data)
             if self._show_velocity:
                 self._update_velocity_arrows()
+            self._update_info_panel()
+            self._update_reward_plot()
 
     def _apply_joystick_override(self) -> None:
-        """Override simulator velocity commands with joystick values."""
         sim = self._simulator
         if hasattr(sim, "commands") and sim.commands is not None:
             try:
@@ -379,67 +416,53 @@ class ViserBridge:
             except (IndexError, AttributeError):
                 pass
 
+    def _update_info_panel(self) -> None:
+        if self._info_handle is not None and self._total_steps % 50 == 0:
+            self._info_handle.content = self._build_info_text()
+
+    def _update_reward_plot(self) -> None:
+        if self._reward_plot_handle is None or len(self._reward_timesteps) < 2:
+            return
+        t = np.array(self._reward_timesteps, dtype=np.float32)
+        r = np.array(self._reward_history, dtype=np.float32)
+        self._reward_plot_handle.data = (t, r)
+
     def _update_velocity_arrows(self) -> None:
-        """Draw 4 mjlab-style velocity arrows above robot head."""
         sim = self._simulator
         root_state = sim.robot_root_states[0].detach().cpu().numpy()
         base_pos = root_state[:3]
         qx, qy, qz, qw = root_state[3], root_state[4], root_state[5], root_state[6]
-
-        # 3x3 rotation matrix from quaternion (xyzw)
         R = np.array([
             [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
             [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
             [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
         ])
-
-        scene_offset = self._scene._scene_offset
+        offset = self._scene._scene_offset
         scale = self._velocity_scale
         z_off = self._vel_z_offset
 
-        def local_to_world(v: np.ndarray) -> np.ndarray:
+        def l2w(v):
             return base_pos + R @ (v * scale)
 
-        origin = local_to_world(np.array([0, 0, z_off]))
+        origin = l2w(np.array([0, 0, z_off]))
 
-        # Command velocity
-        cmd_vx, cmd_vy, cmd_yaw = 0.0, 0.0, 0.0
+        cmd_vx = cmd_vy = cmd_yaw = 0.0
         if hasattr(sim, "commands") and sim.commands is not None:
             try:
                 cmd = sim.commands[0].detach().cpu().numpy()
-                cmd_vx = cmd[0] if len(cmd) > 0 else 0.0
-                cmd_vy = cmd[1] if len(cmd) > 1 else 0.0
-                cmd_yaw = cmd[2] if len(cmd) > 2 else 0.0
+                cmd_vx = float(cmd[0]) if len(cmd) > 0 else 0.0
+                cmd_vy = float(cmd[1]) if len(cmd) > 1 else 0.0
+                cmd_yaw = float(cmd[2]) if len(cmd) > 2 else 0.0
             except (IndexError, AttributeError):
                 pass
 
-        # Actual velocity (world frame → body frame)
-        lin_vel_w = root_state[7:10]
-        ang_vel_w = root_state[10:13]
-        lin_vel_b = R.T @ lin_vel_w
-        ang_vel_b = R.T @ ang_vel_w
+        lin_vel_b = R.T @ root_state[7:10]
+        ang_vel_b = R.T @ root_state[10:13]
 
-        # 4 arrows (mjlab convention)
-        self._arrow_cmd_lin.update(
-            origin,
-            local_to_world(np.array([0, 0, z_off]) + np.array([cmd_vx, cmd_vy, 0])),
-            scene_offset,
-        )
-        self._arrow_cmd_ang.update(
-            origin,
-            local_to_world(np.array([0, 0, z_off]) + np.array([0, 0, cmd_yaw])),
-            scene_offset,
-        )
-        self._arrow_actual_lin.update(
-            origin,
-            local_to_world(np.array([0, 0, z_off]) + np.array([lin_vel_b[0], lin_vel_b[1], 0])),
-            scene_offset,
-        )
-        self._arrow_actual_ang.update(
-            origin,
-            local_to_world(np.array([0, 0, z_off]) + np.array([0, 0, ang_vel_b[2]])),
-            scene_offset,
-        )
+        self._arrow_cmd_lin.update(origin, l2w(np.array([0, 0, z_off]) + np.array([cmd_vx, cmd_vy, 0])), offset)
+        self._arrow_cmd_ang.update(origin, l2w(np.array([0, 0, z_off]) + np.array([0, 0, cmd_yaw])), offset)
+        self._arrow_actual_lin.update(origin, l2w(np.array([0, 0, z_off]) + np.array([lin_vel_b[0], lin_vel_b[1], 0])), offset)
+        self._arrow_actual_ang.update(origin, l2w(np.array([0, 0, z_off]) + np.array([0, 0, ang_vel_b[2]])), offset)
 
     # ================================================================
     # Lifecycle

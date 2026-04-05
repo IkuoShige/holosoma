@@ -492,6 +492,8 @@ class BaseTask:
         self.rew_buf[:] = self.reward_manager.compute(self.dt)
         self.episode_sums = getattr(self.reward_manager, "episode_sums", {})
         self.episode_sums_raw = getattr(self.reward_manager, "episode_sums_raw", {})
+        # Push rewards to viser viewer for live plotting
+        self.simulator.push_viser_rewards(self.rew_buf)
 
     def _compute_observations(self):
         self.obs_buf_dict = self.observation_manager.compute()
