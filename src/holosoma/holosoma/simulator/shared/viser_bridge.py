@@ -78,7 +78,7 @@ class ViserBridge:
 
     def _resolve_urdf_path(self) -> str:
         """Resolve robot URDF path from simulator's robot config."""
-        from holosoma.utils.common import get_holosoma_root
+        from holosoma.utils.module_utils import get_holosoma_root
 
         asset_root = self._simulator.robot_config.asset.asset_root
         if asset_root.startswith("@holosoma/"):
