@@ -147,6 +147,9 @@ class ViserBridge:
         self._vel_joystick_vy = 0.0
         self._vel_joystick_yaw = 0.0
 
+        # Speed control
+        self._speed_multiplier = 1.0
+
         # Reward tracking
         self._reward_history: deque[float] = deque(maxlen=_REWARD_HISTORY_LEN)
         self._reward_timesteps: deque[float] = deque(maxlen=_REWARD_HISTORY_LEN)
@@ -266,6 +269,17 @@ class ViserBridge:
                     btn_play.visible = False
                     btn_pause.visible = True
 
+                # Speed controls
+                speed_group = server.gui.add_button_group(
+                    "Speed", ("0.25x", "0.5x", "1x", "2x", "4x"),
+                    initial_value="1x",
+                )
+                _SPEED_MAP = {"0.25x": 0.25, "0.5x": 0.5, "1x": 1.0, "2x": 2.0, "4x": 4.0}
+
+                @speed_group.on_click
+                def _(_: _viser.GuiEvent) -> None:
+                    self._speed_multiplier = _SPEED_MAP.get(speed_group.value, 1.0)
+
             # --- Velocity arrows ---
             with server.gui.add_folder("Velocity Arrows", expand_by_default=True):
                 cb_show = server.gui.add_checkbox("Show", initial_value=True)
@@ -325,6 +339,7 @@ class ViserBridge:
         return (
             f"**Status:** {status}\n\n"
             f"**Step:** {self._total_steps}\n\n"
+            f"**Speed:** {self._speed_multiplier}x\n\n"
             f"**FPS:** {self._current_fps:.0f}\n\n"
             f"**Simulator:** {type(self._simulator).__name__}\n\n"
             f"**DOFs:** {self._mapped_dofs}/{self._simulator.num_dof}"
@@ -372,6 +387,11 @@ class ViserBridge:
     # Update
     # ================================================================
 
+    @property
+    def speed_multiplier(self) -> float:
+        """Current playback speed multiplier (for eval loop pacing)."""
+        return self._speed_multiplier
+
     def update(self) -> None:
         self._step_count += 1
         self._total_steps += 1
@@ -380,7 +400,9 @@ class ViserBridge:
         if self._scene.paused:
             return
         now = time.monotonic()
-        if (now - self._last_update_time) < self._min_update_interval:
+        # Adjust update interval by speed: faster speed → shorter interval
+        interval = self._min_update_interval / max(self._speed_multiplier, 0.1)
+        if (now - self._last_update_time) < interval:
             return
         self._last_update_time = now
 
@@ -427,6 +449,17 @@ class ViserBridge:
         r = np.array(self._reward_history, dtype=np.float32)
         self._reward_plot_handle.data = (t, r)
 
+    def _compute_scene_offset(self) -> np.ndarray:
+        """Compute scene offset from shadow mj_data (matches mjviser's internal tracking)."""
+        offset = np.zeros(3)
+        if self._scene.camera_tracking_enabled:
+            tracked_id = getattr(self._scene, "_tracked_body_id", None)
+            if tracked_id is not None and tracked_id < self._mj_model.nbody:
+                tracked_pos = self._mj_data.xpos[tracked_id].copy()
+                offset = -tracked_pos
+                offset[2] = 0.0  # keep Z grounded
+        return offset
+
     def _update_velocity_arrows(self) -> None:
         sim = self._simulator
         root_state = sim.robot_root_states[0].detach().cpu().numpy()
@@ -437,15 +470,19 @@ class ViserBridge:
             [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
             [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
         ])
-        offset = self._scene._scene_offset
+
+        # Compute scene offset directly from shadow mj_data (reliable)
+        offset = self._compute_scene_offset()
         scale = self._velocity_scale
         z_off = self._vel_z_offset
 
         def l2w(v):
+            """Local body-frame vector → world position."""
             return base_pos + R @ (v * scale)
 
         origin = l2w(np.array([0, 0, z_off]))
 
+        # Command velocity
         cmd_vx = cmd_vy = cmd_yaw = 0.0
         if hasattr(sim, "commands") and sim.commands is not None:
             try:
@@ -456,13 +493,20 @@ class ViserBridge:
             except (IndexError, AttributeError):
                 pass
 
+        # Actual velocity (world → body frame)
         lin_vel_b = R.T @ root_state[7:10]
         ang_vel_b = R.T @ root_state[10:13]
 
-        self._arrow_cmd_lin.update(origin, l2w(np.array([0, 0, z_off]) + np.array([cmd_vx, cmd_vy, 0])), offset)
-        self._arrow_cmd_ang.update(origin, l2w(np.array([0, 0, z_off]) + np.array([0, 0, cmd_yaw])), offset)
-        self._arrow_actual_lin.update(origin, l2w(np.array([0, 0, z_off]) + np.array([lin_vel_b[0], lin_vel_b[1], 0])), offset)
-        self._arrow_actual_ang.update(origin, l2w(np.array([0, 0, z_off]) + np.array([0, 0, ang_vel_b[2]])), offset)
+        # 4 arrows (mjlab convention: all originate from z_offset above base)
+        base_offset = np.array([0, 0, z_off])
+        self._arrow_cmd_lin.update(
+            origin, l2w(base_offset + np.array([cmd_vx, cmd_vy, 0])), offset)
+        self._arrow_cmd_ang.update(
+            origin, l2w(base_offset + np.array([0, 0, cmd_yaw])), offset)
+        self._arrow_actual_lin.update(
+            origin, l2w(base_offset + np.array([lin_vel_b[0], lin_vel_b[1], 0])), offset)
+        self._arrow_actual_ang.update(
+            origin, l2w(base_offset + np.array([0, 0, ang_vel_b[2]])), offset)
 
     # ================================================================
     # Lifecycle
