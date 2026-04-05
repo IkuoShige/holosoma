@@ -1319,6 +1319,12 @@ class MuJoCo(BaseSimulator):
             self.viewer = None
             return
 
+        # Skip GLFW viewer when viser bridge is active (no display needed)
+        if self.viser_bridge is not None:
+            logger.info("Viser bridge active - skipping GLFW viewer setup")
+            self.viewer = None
+            return
+
         self.viewer = mujoco.viewer.launch_passive(self.root_model, self.root_data, key_callback=self._key_callback)
         logger.info("=== Viewer setup completed with keyboard callback ===")
 
