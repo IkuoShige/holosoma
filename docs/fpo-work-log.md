@@ -1,5 +1,70 @@
 # FPO (Flow Policy Optimization) 作業ログ
 
+---
+
+## 実施日: 2026-04-05
+## ブランチ: feat/fpo
+## 作業: FPO++ 公式実装 (fpo-control) からの差分統合
+
+### 背景
+
+公式FPO++実装が `/workspace/fpo-control/` に公開されたため、holosomaの既存FPO実装���の差分を分析し、
+FPO++の全機能を holosoma に統合する作業を実施。
+
+### 差分分析結果���holosoma FPO vs 公式 FPO++）
+
+#### アーキテクチャ差分
+
+| 項目 | holosoma (旧) | fpo-control (FPO++) |
+|------|--------------|---------------------|
+| Timestep embed | 64次元, 学習可能MLP投影 | 8次元, raw sinusoidal |
+| Action出力 | `action_bound * tanh(x)` | `actor_scale * x` (線形) |
+| CFM loss reduction | sum | sqrt (分散保存型) |
+| Timestep sampling | U(0,1) 一様 | Beta(1,β) + [0.005, 0.995] clamp |
+| EMA | なし | actor重みのEMA (decay=0.95) |
+| kNN entropy | なし | Kozachenko-Leonenko推定��� |
+| STE clamp | なし | Straight-Through Estimator |
+| 負advantage clamp | なし | cfm_loss_clamp_negative_advantages |
+| Advantage clamp | なし | (100, 100) 対称 |
+| Action perturbation | なし | std=0.02 のノイズ |
+| Value loss | 常にclipped | clipped=False (FPO++) |
+
+### 新規作成ファイル
+
+| ファイル | 内容 |
+|---------|------|
+| `agents/modules/ema.py` | ExponentialMovingAverage (fpo-controlからポート) |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `agents/modules/flow_policy.py` | SimpleTimestepEmbedder追加���VelocityFieldMLP: use_learned_time_embed/mlp_output_scale/final_layer_weight_scale追加��FlowPolicy: use_tanh/actor_scale/action_perturb_std/cfm_loss_t_inverse_cdf_beta追加、compute_flow_loss: sqrt reduction追加・3-tuple返却(loss,x1_pred,x0_pred)、_scale_actions統一、Beta(1,β)サンプリング |
+| `agents/modules/module_utils.py` | setup_flow_policy_module: FPO++パラメータ7個追加 |
+| `agents/fpo/fpo_agent.py` | clamp_ste関数追加、EMA初期化/更新/save/load、_compute_knn_entropy追加、_compute_fpo_ratio: STE clamp・負advantage clamp対応、_compute_ppo_loss: advantage clamp・kNN entropy・use_clipped_value_loss・SPO trust region追加、storage action noise、3-tuple対応、ONNX wrapper: EMA/linear scale対応 |
+| `config_types/algo.py` | FPOConfig: 17個の新フィールド追加 (use_tanh, actor_scale, action_perturb_std, storage_action_noise_std, cfm_loss_t_inverse_cdf_beta, use_learned_time_embed, mlp_output_scale, final_layer_weight_scale, use_ste_clamp, cfm_diff_clamp_max, cfm_loss_clamp_negative_advantages, cfm_loss_clamp_negative_advantages_max, advantage_clamp, knn_entropy_coef, knn_entropy_k, use_clipped_value_loss, ema_decay, ema_warmup_steps) |
+| `config_values/algo.py` | `fpo_pp` プリセット追加 (公式FPO++ハイパーパラメータ) |
+| `config_values/experiment.py` | `g1_29dof_fpo_pp` 登録 |
+| `config_values/loco/g1/experiment.py` | `g1_29dof_fpo_pp` 実験プリセット追加 |
+
+### 設計方針
+
+- **後方互換性完全維持**: 全新フィールドはデフォルト値で既存FPO動作を再現
+- **Config toggle方式**: `use_tanh=True/False`, `use_ste_clamp=True/False` ��で切り替え
+- **holosoma独自���能の保持**: adaptive δ, divergence guard, BC warm-start, symmetry augmentation, MC chunking, rich diagnostics — 全て保持
+- `fpo` プリセット: 既存の動作を変更せず
+- `fpo_pp` プリセット: 公式FPO++の推奨ハイパーパラメータ
+
+### 未検証項��� (ユーザー環境で要テスト)
+
+- [ ] `source scripts/source_mujoco_setup.sh` 後に `fpo_pp` プリセットで短期学���テスト
+- [ ] `source scripts/source_isaacsim_setup.sh` 後に同テスト
+- [ ] 既存 `fpo` プリセットの回帰テスト (backward compatibility)
+- [ ] EMA重みによるONNX export / 推論テスト
+- [ ] 長期学習での安定性確認 (MuJoCo/mjwarp)
+
+---
+
 ## 実施日: 2025-02-15
 ## ブランチ: feat/k1
 

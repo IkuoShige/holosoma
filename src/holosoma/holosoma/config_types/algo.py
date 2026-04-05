@@ -511,10 +511,66 @@ class FPOConfig:
     """Chunk size along K (MC sample) dimension for compute_flow_loss. None disables chunking."""
 
     cfm_loss_reduction: str = "sum"
-    """Reduction over action dim in CFM loss: 'sum' (paper-faithful squared L2 norm) or 'mean'."""
+    """Reduction over action dim in CFM loss: 'sum', 'mean', or 'sqrt' (FPO++ variance-preserving)."""
 
     obs_normalization: bool = True
     """Whether to enable observation normalization (running mean/std)."""
+
+    # ===== FPO++ additions =====
+
+    use_tanh: bool = True
+    """True: action_bound * tanh(x) (holosoma default). False: actor_scale * x (FPO++ linear)."""
+
+    actor_scale: float = 1.0
+    """Linear action scaling factor when use_tanh=False (FPO++ style)."""
+
+    action_perturb_std: float = 0.0
+    """Gaussian noise std added to actions during training (FPO++ entropy regularizer)."""
+
+    storage_action_noise_std: float = 0.0
+    """Gaussian noise std added to stored actions for implicit regularization."""
+
+    cfm_loss_t_inverse_cdf_beta: float = 1.0
+    """Beta(1, beta) for timestep sampling. 1.0 = uniform. >1 favors t near 0 (action refinement)."""
+
+    use_learned_time_embed: bool = True
+    """True: learned MLP projection (holosoma). False: raw sinusoidal (FPO++ official)."""
+
+    mlp_output_scale: float = 1.0
+    """Scaling factor applied to velocity field MLP output."""
+
+    final_layer_weight_scale: float | None = None
+    """Scaling for actor final layer init weights. None = default near-zero init."""
+
+    use_ste_clamp: bool = False
+    """Use straight-through estimator for log_ratio clamping (FPO++ style)."""
+
+    cfm_diff_clamp_max: float = 10.0
+    """Upper bound for one-sided CFM loss difference clamping (used with use_ste_clamp=True)."""
+
+    cfm_loss_clamp_negative_advantages: bool = False
+    """Clamp current CFM loss harder when advantage is negative (FPO++ stability)."""
+
+    cfm_loss_clamp_negative_advantages_max: float = 20.0
+    """Maximum CFM loss for negative advantage clamping."""
+
+    advantage_clamp: tuple[float, float] | None = None
+    """Symmetric advantage clamp (positive_max, negative_max). None = disabled."""
+
+    knn_entropy_coef: float = 0.0
+    """Coefficient for kNN entropy exploration bonus. 0 = disabled."""
+
+    knn_entropy_k: int = 1
+    """k for kNN entropy estimator."""
+
+    use_clipped_value_loss: bool = True
+    """Whether to clip value loss (PPO style). False = simple MSE (FPO++ default)."""
+
+    ema_decay: float = 0.0
+    """EMA decay for actor weights. 0 = disabled. FPO++ canonical: 0.95."""
+
+    ema_warmup_steps: int = 500
+    """PPO update steps before starting EMA. Prevents noisy early weights contaminating EMA."""
 
     # Divergence guard parameters
     divergence_guard_enabled: bool = True

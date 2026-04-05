@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 from typing import Callable
 
+import numpy as np
 import torch
 from holosoma.agents.fast_sac.fast_sac_utils import EmpiricalNormalization
 from holosoma.agents.modules.augmentation_utils import SymmetryUtils
+from holosoma.agents.modules.ema import ExponentialMovingAverage
 from holosoma.agents.modules.module_utils import (
     setup_flow_policy_module,
     setup_ppo_actor_module,
@@ -24,6 +26,12 @@ from holosoma.utils.inference_helpers import (
 )
 from loguru import logger
 from torch import nn
+
+
+def clamp_ste(x: torch.Tensor, min: float | None = None, max: float | None = None) -> torch.Tensor:
+    """Clamp with straight-through estimator: forward uses clamped, backward uses identity."""
+    clamped = x.clamp(min=min, max=max)
+    return x + (clamped - x).detach()
 
 
 class FPOAgent(PPO):
@@ -49,6 +57,8 @@ class FPOAgent(PPO):
         self._action_rate_weight: float = 0.0
         # Adaptive δ: mutable clip value initialized from config
         self._adaptive_cfm_loss_clip: float = config.cfm_loss_clip if config.cfm_loss_clip is not None else 10.0
+        # EMA update counter (tracks PPO update steps, not iterations)
+        self._ema_update_counter: int = 0
 
     def _init_obs_keys(self):
         self.actor_obs_keys = self.config.module_dict.actor.input_dim
@@ -67,6 +77,14 @@ class FPOAgent(PPO):
             num_flow_steps=self.config.num_flow_steps,
             action_bound=self.config.action_bound,
             flow_param_mode=self.config.flow_param_mode,
+            # FPO++ additions
+            use_tanh=self.config.use_tanh,
+            actor_scale=self.config.actor_scale,
+            action_perturb_std=self.config.action_perturb_std,
+            cfm_loss_t_inverse_cdf_beta=self.config.cfm_loss_t_inverse_cdf_beta,
+            use_learned_time_embed=self.config.use_learned_time_embed,
+            mlp_output_scale=self.config.mlp_output_scale,
+            final_layer_weight_scale=self.config.final_layer_weight_scale,
         )
         self.critic = setup_ppo_critic_module(
             obs_dim_dict=self.algo_obs_dim_dict,
@@ -88,6 +106,16 @@ class FPOAgent(PPO):
         if self.use_symmetry:
             self.symmetry_utils = SymmetryUtils(self.env)
 
+        # EMA for actor weights (FPO++)
+        self.ema: ExponentialMovingAverage | None = None
+        if self.config.ema_decay > 0.0:
+            self.ema = ExponentialMovingAverage(
+                self.actor, decay=self.config.ema_decay, device=self.device
+            )
+            logger.info(
+                f"EMA enabled: decay={self.config.ema_decay}, warmup={self.config.ema_warmup_steps}"
+            )
+
         # Synchronize model weights across GPUs after initialization
         if self.is_multi_gpu:
             self._synchronize_model_weights()
@@ -106,11 +134,15 @@ class FPOAgent(PPO):
         self.storage.register("flow_eps", shape=(k, self.num_act), dtype=torch.float)
         self.storage.register("flow_t", shape=(k, 1), dtype=torch.float)
         self.storage.register("flow_old_loss", shape=(k, 1), dtype=torch.float)
+        # FPO++: x1_pred for adaptive KL schedule
+        self.storage.register("flow_x1_pred", shape=(k, self.num_act), dtype=torch.float)
 
-    def _compute_flow_loss_chunked(self, obs, action, eps, t):
+    def _compute_flow_loss_chunked(
+        self, obs: torch.Tensor, action: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute CFM loss with optional chunking along the K (MC sample) dimension.
 
-        This avoids CUDA OOM when K is large by processing chunks sequentially.
+        Returns (loss [B,K,1], x1_pred [B,K,A], x0_pred [B,K,A]).
         """
         chunk_size = self.config.mc_chunk_size
         reduction = self.config.cfm_loss_reduction
@@ -118,15 +150,16 @@ class FPOAgent(PPO):
         k = eps.shape[1]
         if chunk_size is None or k <= chunk_size:
             return self.actor.compute_flow_loss(obs, action, eps, t, reduction=reduction, dim_clip=dim_clip)
-        chunks = []
+        loss_chunks, x1_chunks, x0_chunks = [], [], []
         for start in range(0, k, chunk_size):
             end = min(start + chunk_size, k)
-            chunks.append(
-                self.actor.compute_flow_loss(
-                    obs, action, eps[:, start:end], t[:, start:end], reduction=reduction, dim_clip=dim_clip
-                )
+            loss_c, x1_c, x0_c = self.actor.compute_flow_loss(
+                obs, action, eps[:, start:end], t[:, start:end], reduction=reduction, dim_clip=dim_clip
             )
-        return torch.cat(chunks, dim=1)
+            loss_chunks.append(loss_c)
+            x1_chunks.append(x1_c)
+            x0_chunks.append(x0_c)
+        return torch.cat(loss_chunks, dim=1), torch.cat(x1_chunks, dim=1), torch.cat(x0_chunks, dim=1)
 
     def _update_action_bound(self):
         """Update actor.action_bound based on warmup schedule."""
@@ -258,11 +291,16 @@ class FPOAgent(PPO):
                 actions = self.actor.act({"actor_obs": actor_obs})
                 values = self.critic.evaluate({"critic_obs": critic_obs}).detach()
 
+                # Storage action noise (FPO++ implicit entropy regularization)
+                stored_actions = actions
+                if self.config.storage_action_noise_std > 0:
+                    stored_actions = actions + self.config.storage_action_noise_std * torch.randn_like(actions)
+
                 # Sample MC noise and time for old-policy loss
                 batch_size = actor_obs.shape[0]
                 eps, t = self.actor.sample_mc_noise_and_time(batch_size, self.config.num_mc_samples, actor_obs.device)
-                # Compute old-policy CFM loss: [B, K, 1]
-                old_loss = self._compute_flow_loss_chunked(actor_obs, actions, eps, t)
+                # Compute old-policy CFM loss: [B, K, 1], x1_pred: [B, K, A], x0_pred: [B, K, A]
+                old_loss, x1_pred, _x0_pred = self._compute_flow_loss_chunked(actor_obs, stored_actions, eps, t)
 
                 obs_dict, rewards, dones, infos = self.env.step({"actions": actions})
 
@@ -295,7 +333,7 @@ class FPOAgent(PPO):
                 self.storage.add(
                     actor_obs=actor_obs,
                     critic_obs=critic_obs,
-                    actions=actions,
+                    actions=stored_actions,
                     values=values,
                     actions_log_prob=torch.zeros(batch_size, 1, device=self.device),  # unused in FPO
                     action_mean=torch.zeros(batch_size, self.num_act, device=self.device),  # unused in FPO
@@ -305,6 +343,7 @@ class FPOAgent(PPO):
                     flow_eps=eps.detach(),
                     flow_t=t.detach(),
                     flow_old_loss=old_loss.detach(),
+                    flow_x1_pred=x1_pred.detach(),
                 )
 
                 # Reset actor and critic for completed envs
@@ -354,7 +393,12 @@ class FPOAgent(PPO):
 
         return obs_dict
 
-    def _compute_fpo_ratio(self, old_loss: torch.Tensor, new_loss: torch.Tensor) -> torch.Tensor:
+    def _compute_fpo_ratio(
+        self,
+        old_loss: torch.Tensor,
+        new_loss: torch.Tensor,
+        advantages: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Compute FPO surrogate ratio from CFM losses.
 
         Parameters
@@ -363,6 +407,8 @@ class FPOAgent(PPO):
             Old-policy CFM loss, shape [B, K, 1]
         new_loss : Tensor
             New-policy CFM loss, shape [B, K, 1]
+        advantages : Tensor | None
+            Advantages [B, 1], used for negative-advantage clamping (FPO++).
 
         Returns
         -------
@@ -370,8 +416,6 @@ class FPOAgent(PPO):
             If ratio_mode == "per_sample": [B, K] per-sample ratios (NOT averaged).
             Otherwise: [B] averaged ratio.
         """
-        clip_val = self.config.ratio_log_clip
-
         # Stage 1: clamp individual CFM losses before taking differences
         if self.config.cfm_loss_clip_adaptive:
             clip = self._adaptive_cfm_loss_clip
@@ -381,18 +425,58 @@ class FPOAgent(PPO):
             old_loss = old_loss.clamp(max=self.config.cfm_loss_clip)
             new_loss = new_loss.clamp(max=self.config.cfm_loss_clip)
 
+        # FPO++: clamp current CFM loss harder for negative advantages
+        if self.config.cfm_loss_clamp_negative_advantages and advantages is not None:
+            neg_max = self.config.cfm_loss_clamp_negative_advantages_max
+            new_loss = torch.where(
+                advantages.unsqueeze(-1) < 0,  # [B,1,1] broadcast to [B,K,1]
+                new_loss.clamp(max=neg_max),
+                new_loss,
+            )
+
         if self.config.ratio_mode == "per_sample":
+            log_r = old_loss - new_loss  # [B, K, 1]
             # Stage 2: clamp the difference before exponentiation
-            log_r = torch.clamp(old_loss - new_loss, -clip_val, clip_val)  # [B, K, 1]
+            if self.config.use_ste_clamp:
+                log_r = clamp_ste(log_r, max=self.config.cfm_diff_clamp_max)
+            else:
+                clip_val = self.config.ratio_log_clip
+                log_r = torch.clamp(log_r, -clip_val, clip_val)
             ratio = torch.exp(log_r).squeeze(-1)  # [B, K]
         else:
             # Legacy avg: average losses first, then compute single ratio
             old_loss_avg = old_loss.mean(dim=1)  # [B, 1]
             new_loss_avg = new_loss.mean(dim=1)  # [B, 1]
+            clip_val = self.config.ratio_log_clip
             log_r = torch.clamp(old_loss_avg - new_loss_avg, -clip_val, clip_val)  # [B, 1]
             ratio = torch.exp(log_r).squeeze(-1)  # [B]
 
         return ratio
+
+    def _compute_knn_entropy(self, x0_pred: torch.Tensor, k: int) -> torch.Tensor:
+        """Compute k-NN entropy estimate (Kozachenko-Leonenko estimator).
+
+        Parameters
+        ----------
+        x0_pred : Tensor
+            Predicted actions [batch, n_samples, action_dim]
+        k : int
+            Number of nearest neighbors (typically 1)
+        """
+        batch_size, n_samples, action_dim = x0_pred.shape
+        dists = torch.cdist(x0_pred, x0_pred, p=2)  # [B, K, K]
+        eye_mask = torch.eye(n_samples, device=x0_pred.device).unsqueeze(0).expand(batch_size, -1, -1)
+        dists = dists + eye_mask * 1e10
+        kth_dists, _ = torch.topk(dists, k=k, dim=2, largest=False, sorted=True)
+        rho_k = kth_dists[:, :, -1].clamp(min=1e-6, max=1e9)
+        psi_n = torch.digamma(torch.tensor(float(n_samples), device=x0_pred.device))
+        psi_k = torch.digamma(torch.tensor(float(k), device=x0_pred.device))
+        log_cd = (action_dim / 2) * np.log(np.pi) - float(
+            torch.lgamma(torch.tensor(action_dim / 2 + 1))
+        )
+        log_rho_mean = torch.log(rho_k).mean(dim=1)
+        entropy_per_batch = psi_n - psi_k + log_cd + action_dim * log_rho_mean
+        return entropy_per_batch.mean()
 
     def _compute_ppo_loss(self, minibatch):
         actions_batch = minibatch["actions"]
@@ -404,9 +488,16 @@ class FPOAgent(PPO):
         flow_eps = minibatch["flow_eps"]  # [B, K, A]
         flow_t = minibatch["flow_t"]  # [B, K, 1]
         flow_old_loss = minibatch["flow_old_loss"]  # [B, K, 1]
+        flow_x1_pred_old = minibatch["flow_x1_pred"]  # [B, K, A]
 
         # Note: observations in storage are already normalized during rollout.
         # No additional normalization needed here.
+
+        # FPO++: advantage clamping
+        if self.config.advantage_clamp is not None:
+            with torch.no_grad():
+                pos_clamp, neg_clamp = self.config.advantage_clamp
+                advantages_batch = advantages_batch.clamp(-neg_clamp, pos_clamp)
 
         # Symmetry augmentation
         original_batch_size = actions_batch.shape[0]
@@ -430,18 +521,19 @@ class FPOAgent(PPO):
             flow_eps = flow_eps.repeat(num_aug, 1, 1)
             flow_t = flow_t.repeat(num_aug, 1, 1)
             flow_old_loss = flow_old_loss.repeat(num_aug, 1, 1)
+            flow_x1_pred_old = flow_x1_pred_old.repeat(num_aug, 1, 1)
         else:
             actor_obs = minibatch["actor_obs"]
             critic_obs = minibatch["critic_obs"]
 
-        # Compute new-policy CFM loss with gradients
-        new_loss = self._compute_flow_loss_chunked(actor_obs, actions_batch, flow_eps, flow_t)  # [B, K, 1]
+        # Compute new-policy CFM loss with gradients: [B, K, 1], [B, K, A], [B, K, A]
+        new_loss, x1_pred, x0_pred = self._compute_flow_loss_chunked(actor_obs, actions_batch, flow_eps, flow_t)
 
         # Compute critic values
         value_batch = self.critic.evaluate({"critic_obs": critic_obs})
 
-        # Compute FPO ratio
-        ratio = self._compute_fpo_ratio(flow_old_loss, new_loss)
+        # Compute FPO ratio (pass advantages for negative-advantage clamping)
+        ratio = self._compute_fpo_ratio(flow_old_loss, new_loss, advantages=advantages_batch)
         if not torch.isfinite(ratio).all():
             logger.warning("Non-finite ratio detected, replacing with 1.0")
             ratio = torch.where(torch.isfinite(ratio), ratio, torch.ones_like(ratio))
@@ -458,6 +550,8 @@ class FPOAgent(PPO):
                 ppo_obj = torch.min(adv_k * ratio, adv_k * ratio.clamp(1 - eps, 1 + eps))
                 spo_obj = adv_k * ratio - (adv_k.abs() / (2 * eps)) * (ratio - 1).pow(2)
                 objective = torch.where(pos_mask, ppo_obj, spo_obj)  # [B, K]
+            elif self.config.trust_region_mode == "spo":
+                objective = adv_k * ratio - (adv_k.abs() / (2 * eps)) * (ratio - 1).pow(2)
             else:
                 # ppo_clip fallback
                 objective = torch.min(adv_k * ratio, adv_k * ratio.clamp(1 - eps, 1 + eps))
@@ -474,13 +568,21 @@ class FPOAgent(PPO):
             surrogate_clipped = -adv * ratio.clamp(1 - eps, 1 + eps)
             surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
-        # Value function loss (same as PPO)
-        value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
-            -self.config.clip_param, self.config.clip_param
-        )
-        value_losses = (value_batch - returns_batch).pow(2)
-        value_losses_clipped = (value_clipped - returns_batch).pow(2)
-        value_loss = torch.max(value_losses, value_losses_clipped).mean()
+        # kNN entropy bonus (FPO++)
+        entropy_bonus = torch.tensor(0.0, device=self.device)
+        if self.config.knn_entropy_coef > 0 and x0_pred is not None:
+            entropy_bonus = self._compute_knn_entropy(x0_pred.detach(), k=self.config.knn_entropy_k)
+
+        # Value function loss
+        if self.config.use_clipped_value_loss:
+            value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
+                -self.config.clip_param, self.config.clip_param
+            )
+            value_losses = (value_batch - returns_batch).pow(2)
+            value_losses_clipped = (value_clipped - returns_batch).pow(2)
+            value_loss = torch.max(value_losses, value_losses_clipped).mean()
+        else:
+            value_loss = (returns_batch - value_batch).pow(2).mean()
 
         # Symmetry losses
         if self.use_symmetry and (self.config.symmetry_actor_coef > 0.0 or self.config.symmetry_critic_coef > 0.0):
@@ -518,6 +620,8 @@ class FPOAgent(PPO):
         cfm_reg_loss = self.config.cfm_reg_coef * normalized_cfm_loss
 
         actor_loss = surrogate_loss + cfm_reg_loss + self.config.symmetry_actor_coef * symmetry_actor_loss
+        if self.config.knn_entropy_coef > 0:
+            actor_loss = actor_loss - self.config.knn_entropy_coef * entropy_bonus
         if not torch.isfinite(actor_loss):
             logger.warning("Non-finite actor_loss detected, replacing with zero")
             actor_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
@@ -647,6 +751,15 @@ class FPOAgent(PPO):
         self.actor_optimizer.step()
         self.critic_optimizer.step()
 
+        # EMA update (FPO++)
+        if self.ema is not None:
+            self._ema_update_counter += 1
+            if self._ema_update_counter == self.config.ema_warmup_steps:
+                self.ema.reset_to_current()
+                logger.info(f"EMA warmup complete at update step {self._ema_update_counter}")
+            elif self._ema_update_counter > self.config.ema_warmup_steps:
+                self.ema.update()
+
         # Accumulate metrics (same as PPO base)
         loss_dict["Value"] += ppo_loss_dict.pop("value_loss").item()
         loss_dict["Surrogate"] += ppo_loss_dict.pop("surrogate_loss").item()
@@ -705,6 +818,9 @@ class FPOAgent(PPO):
             "iter": self.current_learning_iteration,
             "infos": infos,
         }
+        if self.ema is not None:
+            checkpoint_dict["ema_state_dict"] = self.ema.state_dict()
+            checkpoint_dict["ema_update_counter"] = self._ema_update_counter
         if self.config.obs_normalization:
             checkpoint_dict["obs_normalizer_state"] = self.obs_normalizer.state_dict()
             checkpoint_dict["critic_obs_normalizer_state"] = self.critic_obs_normalizer.state_dict()
@@ -726,6 +842,10 @@ class FPOAgent(PPO):
                 self.actor_learning_rate = loaded_dict["actor_optimizer_state_dict"]["param_groups"][0]["lr"]
                 self.critic_learning_rate = loaded_dict["critic_optimizer_state_dict"]["param_groups"][0]["lr"]
                 logger.info("Optimizer loaded from checkpoint")
+            if self.ema is not None and "ema_state_dict" in loaded_dict:
+                self.ema.load_state_dict(loaded_dict["ema_state_dict"])
+                self._ema_update_counter = loaded_dict.get("ema_update_counter", 0)
+                logger.info(f"Loaded EMA state (update_counter={self._ema_update_counter})")
             if self.config.obs_normalization and "obs_normalizer_state" in loaded_dict:
                 self.obs_normalizer.load_state_dict(loaded_dict["obs_normalizer_state"])
                 self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_normalizer_state"])
@@ -803,11 +923,22 @@ class FPOAgent(PPO):
         deterministic ONNX export (avoids device mismatch during constant folding).
         At inference time on a real robot, the ONNX model produces a deterministic
         policy (the ODE-integrated "mean" from the zero-noise starting point).
+
+        If EMA is enabled, applies EMA weights before export.
         """
         num_steps = self.config.onnx_export_num_flow_steps or self.config.num_flow_steps
         actor = self.actor
+
+        # Apply EMA weights for export if available
+        if self.ema is not None and self._ema_update_counter > self.config.ema_warmup_steps:
+            self.ema.store(actor)
+            self.ema.copy_to(actor)
+
         use_obs_norm = self.config.obs_normalization
         obs_norm_copy = copy.deepcopy(self.obs_normalizer).cpu() if use_obs_norm else None
+        use_tanh = self.config.use_tanh
+        action_bound = actor.action_bound
+        actor_scale = actor.actor_scale
 
         class FlowPolicyONNXWrapper(nn.Module):
             def __init__(self, flow_actor, export_num_flow_steps, obs_normalizer):
@@ -816,7 +947,9 @@ class FPOAgent(PPO):
                 self.num_actions = flow_actor.num_actions
                 self.export_num_flow_steps = export_num_flow_steps
                 self._obs_dim = flow_actor.obs_dim
-                self._action_bound = flow_actor.action_bound
+                self._action_bound = action_bound
+                self._actor_scale = actor_scale
+                self._use_tanh = use_tanh
                 self._flow_param_mode = flow_actor.flow_param_mode
                 self.obs_normalizer = obs_normalizer
 
@@ -825,8 +958,6 @@ class FPOAgent(PPO):
                     actor_obs = self.obs_normalizer(actor_obs, update=False)
                 k = self.export_num_flow_steps
                 dt = 1.0 / k
-                # Start from zeros (deterministic) instead of randn.
-                # Use new_zeros to inherit device/dtype from input tensor.
                 x = actor_obs.new_zeros(actor_obs.shape[0], self.num_actions)
                 for j in range(k, 0, -1):
                     t_val = j / k
@@ -837,9 +968,17 @@ class FPOAgent(PPO):
                     else:
                         t_prev = (j - 1) / k
                         x = x * (t_prev / t_val) + output * (dt / t_val)
-                return self._action_bound * torch.tanh(x)
+                if self._use_tanh:
+                    return self._action_bound * torch.tanh(x)
+                return self._actor_scale * x
 
-        return FlowPolicyONNXWrapper(actor, num_steps, obs_norm_copy)
+        wrapper = FlowPolicyONNXWrapper(actor, num_steps, obs_norm_copy)
+
+        # Restore original weights after creating wrapper (EMA was temporarily applied)
+        if self.ema is not None and self._ema_update_counter > self.config.ema_warmup_steps:
+            self.ema.restore(actor)
+
+        return wrapper
 
     def export(self, onnx_file_path: str):
         """Export FPO policy as ONNX.

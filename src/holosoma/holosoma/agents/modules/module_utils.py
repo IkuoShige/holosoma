@@ -64,6 +64,14 @@ def setup_flow_policy_module(
     num_flow_steps: int = 10,
     action_bound: float = 3.0,
     flow_param_mode: str = "velocity",
+    # FPO++ additions
+    use_tanh: bool = True,
+    actor_scale: float = 1.0,
+    action_perturb_std: float = 0.0,
+    cfm_loss_t_inverse_cdf_beta: float = 1.0,
+    use_learned_time_embed: bool = True,
+    mlp_output_scale: float = 1.0,
+    final_layer_weight_scale: float | None = None,
 ):
     return FlowPolicy(
         obs_dim_dict=obs_dim_dict,
@@ -75,4 +83,11 @@ def setup_flow_policy_module(
         num_flow_steps=num_flow_steps,
         action_bound=action_bound,
         flow_param_mode=flow_param_mode,
+        use_tanh=use_tanh,
+        actor_scale=actor_scale,
+        action_perturb_std=action_perturb_std,
+        cfm_loss_t_inverse_cdf_beta=cfm_loss_t_inverse_cdf_beta,
+        use_learned_time_embed=use_learned_time_embed,
+        mlp_output_scale=mlp_output_scale,
+        final_layer_weight_scale=final_layer_weight_scale,
     ).to(device)
