@@ -266,7 +266,7 @@ class ViserBridge:
 
         server = self._server
 
-        with tab_group.add_tab("Controls", viser_icon=_viser.Icon.SETTINGS):
+        with tab_group.add_tab("Controls"):
             # --- Velocity arrows ---
             with server.gui.add_folder("Velocity Arrows", expand_by_default=True):
                 cb_show = server.gui.add_checkbox("Show", initial_value=True)
