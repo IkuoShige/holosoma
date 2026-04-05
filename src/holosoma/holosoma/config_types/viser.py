@@ -42,3 +42,6 @@ class ViserBridgeConfig:
 
     fps_limit: int = 10
     """Cap viser updates to this frame rate. Lower = less training overhead."""
+
+    show_terrain: bool = False
+    """Show terrain mesh in viser viewer. Can be heavy for large terrains."""

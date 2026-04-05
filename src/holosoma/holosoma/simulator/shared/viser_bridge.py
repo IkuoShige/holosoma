@@ -127,9 +127,13 @@ class ViserBridge:
         self._server = _viser.ViserServer(host=config.host, port=config.port)
         self._scene = ViserMujocoScene(self._server, self._mj_model, num_envs=1)
 
-        # Terrain mesh
+        # Terrain mesh (off by default, can be heavy)
         self._terrain_handle = None
-        self._add_terrain()
+        if config.show_terrain:
+            try:
+                self._add_terrain()
+            except Exception as e:
+                logger.warning(f"ViserBridge: terrain loading failed: {e}")
 
         # 3D arrows
         self._arrow_cmd_lin = _Arrow3D(self._server, "/arrows/cmd_lin", (50, 70, 230, 200))
