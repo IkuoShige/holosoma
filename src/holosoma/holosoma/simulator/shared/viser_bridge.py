@@ -270,7 +270,10 @@ class ViserBridge:
         # Semi-transparent green-brown
         terrain_mesh.visual.face_colors = [(140, 170, 110, 140)] * len(terrain_mesh.faces)
 
-        self._terrain_handle = self._server.scene.add_mesh_trimesh("/terrain", terrain_mesh)
+        # Parent under mjviser's fixed_bodies_frame so scene_offset is applied automatically
+        self._terrain_handle = self._server.scene.add_mesh_trimesh(
+            "/fixed_bodies/terrain", terrain_mesh
+        )
         logger.info(
             f"ViserBridge: terrain added ({len(terrain_mesh.vertices)} verts, "
             f"{len(terrain_mesh.faces)} faces, crop={crop_radius}m around env 0)"
@@ -660,17 +663,8 @@ class ViserBridge:
                 pass
 
     def _update_terrain_offset(self) -> None:
-        """Move terrain mesh to follow camera tracking offset (full 3D, including Z)."""
-        if self._terrain_handle is not None:
-            if self._scene.camera_tracking_enabled:
-                tracked_id = getattr(self._scene, "_tracked_body_id", None)
-                if tracked_id is not None and tracked_id < self._mj_model.nbody:
-                    offset = -self._mj_data.xpos[tracked_id].copy()
-                    # Slight downward nudge to avoid z-fighting with foot meshes
-                    offset[2] -= 0.02
-                    self._terrain_handle.position = offset
-                    return
-            self._terrain_handle.position = np.zeros(3)
+        """No-op: terrain is parented under /fixed_bodies, offset handled by mjviser."""
+        pass
 
     def _update_info_panel(self) -> None:
         if self._info_handle is not None and self._total_steps % 50 == 0:
