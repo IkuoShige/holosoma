@@ -213,14 +213,13 @@ class ViserBridge:
         return os.path.join(asset_root, self._simulator.robot_config.asset.xml_file)
 
     def _add_terrain(self) -> None:
-        """Add terrain mesh from terrain_manager if available."""
+        """Add terrain mesh from terrain_manager, cropped around env 0."""
         sim = self._simulator
         tm = getattr(sim, "terrain_manager", None)
         if tm is None:
             logger.debug("ViserBridge: no terrain_manager")
             return
 
-        # terrain_manager.terrain_term holds the TerrainTermBase with .mesh property
         term = getattr(tm, "terrain_term", None)
         if term is None:
             logger.debug("ViserBridge: no terrain_term on manager")
@@ -231,20 +230,41 @@ class ViserBridge:
             logger.debug("ViserBridge: terrain term has no mesh")
             return
 
-        # Downsample for large terrains (>100k faces) to keep viser responsive
         terrain_mesh = mesh.copy()
-        if len(terrain_mesh.faces) > 100_000:
-            terrain_mesh = terrain_mesh.simplify_quadric_decimation(100_000)
 
-        # Color terrain green-brown
-        terrain_mesh.visual.face_colors = [(140, 170, 110, 180)] * len(terrain_mesh.faces)
+        # Crop to a reasonable area around env 0 (±crop_radius meters)
+        crop_radius = 15.0
+        env_origin = np.zeros(3)
 
-        self._terrain_handle = self._server.scene.add_mesh_trimesh(
-            "/terrain", terrain_mesh
-        )
+        # Try to get env 0 origin from terrain term
+        env_origins = getattr(term, "_env_origins", None)
+        if env_origins is not None and env_origins.size > 0:
+            env_origin = env_origins.reshape(-1, 3)[0]
+
+        # Crop: keep faces whose centroid is within crop_radius of env_origin
+        centroids = terrain_mesh.triangles_center
+        dx = centroids[:, 0] - env_origin[0]
+        dy = centroids[:, 1] - env_origin[1]
+        mask = (np.abs(dx) < crop_radius) & (np.abs(dy) < crop_radius)
+
+        if mask.sum() == 0:
+            logger.debug("ViserBridge: no terrain faces near env 0")
+            return
+
+        terrain_mesh.update_faces(mask)
+        terrain_mesh.remove_unreferenced_vertices()
+
+        # Downsample if still too large
+        if len(terrain_mesh.faces) > 80_000:
+            terrain_mesh = terrain_mesh.simplify_quadric_decimation(80_000)
+
+        # Semi-transparent green-brown
+        terrain_mesh.visual.face_colors = [(140, 170, 110, 140)] * len(terrain_mesh.faces)
+
+        self._terrain_handle = self._server.scene.add_mesh_trimesh("/terrain", terrain_mesh)
         logger.info(
             f"ViserBridge: terrain added ({len(terrain_mesh.vertices)} verts, "
-            f"{len(terrain_mesh.faces)} faces)"
+            f"{len(terrain_mesh.faces)} faces, crop={crop_radius}m around env 0)"
         )
 
     def _resolve_shadow_addressing(self) -> None:
