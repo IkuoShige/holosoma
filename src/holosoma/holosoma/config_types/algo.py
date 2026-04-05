@@ -416,6 +416,9 @@ class FPOConfig:
     load_optimizer: bool = True
     """Whether to load optimizer state."""
 
+    empirical_normalization: bool = False
+    """Whether to apply empirical normalization to actor and critic observations (PPO parent requires this)."""
+
     num_learning_iterations: int = 1000000
     """Total number of learning iterations."""
 
