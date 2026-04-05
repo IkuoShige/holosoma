@@ -137,14 +137,15 @@ class ViserBridge:
         sim = self._simulator
         import numpy as np
 
-        # Read state for env 0 (primary visualization target)
+        # Read state for env 0
         # dof_pos: [num_envs, num_dof] → [num_dof]
         dof_pos = sim.dof_pos[0].detach().cpu().numpy()
 
-        # Root body transform: _rigid_body_pos [num_envs, num_bodies, 3]
-        #                      _rigid_body_rot [num_envs, num_bodies, 4] (xyzw)
-        root_pos = sim._rigid_body_pos[0, 0].detach().cpu().numpy()  # [3]
-        root_rot_xyzw = sim._rigid_body_rot[0, 0].detach().cpu().numpy()  # [4] xyzw
+        # Robot root state: [num_envs, 13] = [x,y,z, qx,qy,qz,qw, vx,vy,vz, wx,wy,wz]
+        # Use robot_root_states (not _rigid_body_pos[0,0] which is MuJoCo worldbody at origin)
+        root_state = sim.robot_root_states[0].detach().cpu().numpy()  # [13]
+        root_pos = root_state[:3]
+        root_rot_xyzw = root_state[3:7]
 
         # Convert xyzw → wxyz for viser
         root_rot_wxyz = np.array([
