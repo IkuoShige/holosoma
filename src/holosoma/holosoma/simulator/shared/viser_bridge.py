@@ -104,12 +104,32 @@ class ViserBridge:
     # ================================================================
 
     def _create_shadow_model(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
-        """Load robot MJCF into a standalone MuJoCo model for FK-only rendering."""
+        """Load robot MJCF into a standalone MuJoCo model for FK-only rendering.
+
+        Uses MjSpec to strip contact pairs that reference external geoms
+        (e.g. 'floor') which don't exist in the robot-only shadow model.
+        """
         import mujoco as mj
 
         mjcf_path = self._resolve_mjcf_path()
         logger.info(f"ViserBridge: loading shadow model from {mjcf_path}")
-        model = mj.MjModel.from_xml_path(mjcf_path)
+
+        spec = mj.MjSpec.from_file(mjcf_path)
+
+        # Remove contact pairs that reference non-existent geoms (e.g. 'floor')
+        # Iterate in reverse to safely delete by index
+        pairs_to_remove = []
+        for i in range(spec.npair):
+            pair = spec.pairs[i]
+            name = pair.name if hasattr(pair, "name") else ""
+            # Check if either geom reference would fail (floor, ground, etc.)
+            # We remove all contact pairs since FK-only model needs none
+            pairs_to_remove.append(i)
+
+        for i in reversed(pairs_to_remove):
+            spec.pairs[i].delete()
+
+        model = spec.compile()
         data = mj.MjData(model)
         return model, data
 
