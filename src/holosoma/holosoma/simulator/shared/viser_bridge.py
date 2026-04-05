@@ -270,14 +270,16 @@ class ViserBridge:
                     btn_pause.visible = True
 
                 # Speed controls
-                speed_group = server.gui.add_button_group(
-                    "Speed", ("0.25x", "0.5x", "1x", "2x", "4x"),
-                )
-                _SPEED_MAP = {"0.25x": 0.25, "0.5x": 0.5, "1x": 1.0, "2x": 2.0, "4x": 4.0}
+                speed_group = server.gui.add_button_group("Speed", ("Slower", "1x", "Faster"))
 
                 @speed_group.on_click
                 def _(_: _viser.GuiEvent) -> None:
-                    self._speed_multiplier = _SPEED_MAP.get(speed_group.value, 1.0)
+                    if speed_group.value == "Slower":
+                        self._speed_multiplier = max(0.125, self._speed_multiplier / 2.0)
+                    elif speed_group.value == "Faster":
+                        self._speed_multiplier = min(8.0, self._speed_multiplier * 2.0)
+                    else:
+                        self._speed_multiplier = 1.0
 
             # --- Velocity arrows ---
             with server.gui.add_folder("Velocity Arrows", expand_by_default=True):
