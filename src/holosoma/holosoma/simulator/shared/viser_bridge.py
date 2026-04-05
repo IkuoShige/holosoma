@@ -127,13 +127,13 @@ class ViserBridge:
         self._server = _viser.ViserServer(host=config.host, port=config.port)
         self._scene = ViserMujocoScene(self._server, self._mj_model, num_envs=1)
 
-        # Terrain mesh (off by default, can be heavy)
+        # Terrain mesh
         self._terrain_handle = None
         if config.show_terrain:
             try:
                 self._add_terrain()
-            except Exception as e:
-                logger.warning(f"ViserBridge: terrain loading failed: {e}")
+            except Exception:
+                logger.exception("ViserBridge: terrain loading failed")
 
         # 3D arrows
         self._arrow_cmd_lin = _Arrow3D(self._server, "/arrows/cmd_lin", (50, 70, 230, 200))
@@ -217,18 +217,20 @@ class ViserBridge:
         sim = self._simulator
         tm = getattr(sim, "terrain_manager", None)
         if tm is None:
-            logger.debug("ViserBridge: no terrain_manager")
+            logger.info("ViserBridge: no terrain_manager on simulator")
             return
 
         term = getattr(tm, "terrain_term", None)
         if term is None:
-            logger.debug("ViserBridge: no terrain_term on manager")
+            logger.info("ViserBridge: no terrain_term on manager")
             return
 
         mesh = getattr(term, "mesh", None) or getattr(term, "_mesh", None)
         if mesh is None or not hasattr(mesh, "vertices") or len(mesh.vertices) == 0:
-            logger.debug("ViserBridge: terrain term has no mesh")
+            logger.info(f"ViserBridge: terrain term has no mesh (mesh={mesh})")
             return
+
+        logger.info(f"ViserBridge: terrain mesh found - {len(mesh.vertices)} verts, {len(mesh.faces)} faces")
 
         terrain_mesh = mesh.copy()
 
@@ -247,8 +249,9 @@ class ViserBridge:
         dy = centroids[:, 1] - env_origin[1]
         mask = (np.abs(dx) < crop_radius) & (np.abs(dy) < crop_radius)
 
+        logger.info(f"ViserBridge: crop around env_origin={env_origin}, kept {mask.sum()}/{len(mask)} faces")
         if mask.sum() == 0:
-            logger.debug("ViserBridge: no terrain faces near env 0")
+            logger.info("ViserBridge: no terrain faces near env 0 after crop")
             return
 
         terrain_mesh.update_faces(mask)
