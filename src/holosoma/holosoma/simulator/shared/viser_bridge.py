@@ -240,8 +240,10 @@ class ViserBridge:
 
         # Try to get env 0 origin from terrain term
         env_origins = getattr(term, "_env_origins", None)
-        if env_origins is not None and env_origins.size > 0:
-            env_origin = env_origins.reshape(-1, 3)[0]
+        if env_origins is not None and len(env_origins) > 0:
+            import torch
+            eo = env_origins.reshape(-1, 3)[0]
+            env_origin = eo.detach().cpu().numpy() if isinstance(eo, torch.Tensor) else np.asarray(eo)
 
         # Crop: keep faces whose centroid is within crop_radius of env_origin
         centroids = terrain_mesh.triangles_center
@@ -258,8 +260,9 @@ class ViserBridge:
         terrain_mesh.remove_unreferenced_vertices()
 
         # Downsample if still too large
-        if len(terrain_mesh.faces) > 80_000:
-            terrain_mesh = terrain_mesh.simplify_quadric_decimation(80_000)
+        if len(terrain_mesh.faces) > 50_000:
+            terrain_mesh = terrain_mesh.simplify_quadric_decimation(50_000)
+            logger.info(f"ViserBridge: decimated terrain to {len(terrain_mesh.faces)} faces")
 
         # Semi-transparent green-brown
         terrain_mesh.visual.face_colors = [(140, 170, 110, 140)] * len(terrain_mesh.faces)
