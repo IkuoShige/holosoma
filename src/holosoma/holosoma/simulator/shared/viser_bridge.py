@@ -127,11 +127,6 @@ class ViserBridge:
         self._server = _viser.ViserServer(host=config.host, port=config.port)
         self._scene = ViserMujocoScene(self._server, self._mj_model, num_envs=1)
 
-        # mjviser GUI tabs (Scene / Visualization / Groups)
-        tab_group = self._scene.create_visualization_gui(
-            camera_distance=3.0, camera_azimuth=150.0, camera_elevation=25.0,
-        )
-
         # 3D arrows
         self._arrow_cmd_lin = _Arrow3D(self._server, "/arrows/cmd_lin", (50, 70, 230, 200))
         self._arrow_cmd_ang = _Arrow3D(self._server, "/arrows/cmd_ang", (50, 150, 50, 200))
@@ -155,10 +150,20 @@ class ViserBridge:
         self._reward_timesteps: deque[float] = deque(maxlen=_REWARD_HISTORY_LEN)
         self._reward_plot_handle = None
 
-        # GUI
+        # GUI — Controls tab FIRST (mjlab convention), then mjviser tabs
         self._info_handle = None
+        tab_group = self._server.gui.add_tab_group()
         self._setup_controls_tab(tab_group)
         self._setup_rewards_tab(tab_group)
+        # mjviser Scene / Visualization / Groups tabs
+        with tab_group.add_tab("Scene"):
+            self._scene.create_scene_gui(
+                camera_distance=3.0, camera_azimuth=150.0, camera_elevation=25.0,
+            )
+        with tab_group.add_tab("Visualization"):
+            self._scene.create_overlay_gui()
+        with tab_group.add_tab("Groups"):
+            self._scene.create_groups_gui()
 
         logger.info(f"ViserBridge: http://{config.host}:{config.port}")
 
@@ -307,7 +312,7 @@ class ViserBridge:
                 )
 
             # --- Velocity joystick ---
-            with server.gui.add_folder("Commands", expand_by_default=False):
+            with server.gui.add_folder("Commands", expand_by_default=True):
                 cb_joy = server.gui.add_checkbox("Enable joystick", initial_value=False)
                 sl_vx = server.gui.add_slider("lin_vel_x", min=-2.0, max=2.0, step=0.05, initial_value=0.0)
                 sl_vy = server.gui.add_slider("lin_vel_y", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
