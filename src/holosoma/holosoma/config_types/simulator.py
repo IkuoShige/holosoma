@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 import tyro
 from holosoma.config_types.viewer import ViewerConfig
+from holosoma.config_types.viser import ViserBridgeConfig
 from pydantic import model_validator
 from pydantic.dataclasses import dataclass
 from typing_extensions import Annotated
@@ -549,6 +550,9 @@ class SimulatorInitConfig:
 
     virtual_gantry: VirtualGantryCfg = field(default_factory=VirtualGantryCfg)
     """Virtual gantry system configuration."""
+
+    viser: ViserBridgeConfig = field(default_factory=ViserBridgeConfig)
+    """Viser web viewer bridge for browser-based 3D visualization."""
 
 
 @dataclass(frozen=True)

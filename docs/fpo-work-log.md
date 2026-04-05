@@ -2,6 +2,64 @@
 
 ---
 
+## 実施日: 2026-04-05 (2)
+## ブランチ: feat/fpo
+## 作業: ViserBridge — ブラウザベース3D可視化
+
+### 背景
+
+headless環境(SSH/Docker)でもブラウザからロボットを可視化できるよう、
+viser web viewerをsimulator層に統合。IsaacSim/MuJoCo/IsaacGym全バックエンドで動作。
+
+### アーキテクチャ
+
+```
+[Simulator backend]  (headless GPU)
+        │  _rigid_body_pos/rot, dof_pos
+        ▼
+   [BaseSimulator]
+        │  _init_viser_bridge() / _step_viser_bridge()
+        ▼
+   [ViserBridge]  ──→  Browser (http://localhost:8080)
+        └─ ViserUrdf (URDF mesh + update_cfg joint updates)
+```
+
+### 新規作成ファイル
+
+| ファイル | 内容 |
+|---------|------|
+| `config_types/viser.py` | ViserBridgeConfig (enabled, host, port, fps_limit, etc.) |
+| `simulator/shared/viser_bridge.py` | ViserBridge本体 (URDF読み込み、joint mapping、frame rate制限) |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `config_types/simulator.py` | SimulatorInitConfigにviserフィールド追加 |
+| `simulator/base_simulator/base_simulator.py` | viser_bridge属性 + _init/_step helpers |
+| `simulator/mujoco/mujoco.py` | _init_viser_bridge() + _step_viser_bridge() 各1行 |
+| `simulator/isaacgym/isaacgym.py` | 同上 |
+| `simulator/isaacsim/isaacsim.py` | 同上 |
+
+### 使い方
+
+```bash
+# 任意のsimulatorで有効化
+python train_agent.py exp:g1-29dof-fpo-pp simulator:mjwarp \
+  --simulator.config.viser.enabled True --simulator.config.viser.port 8080
+# ブラウザで http://localhost:8080 を開く
+```
+
+### 設計ポイント
+
+- viserはoptional dependency（未インストール時はImportError警告のみ）
+- enabled=False（デフォルト）で完全にゼロコスト
+- ViserUrdf方式: retargetingモジュールと同パターン、GLB事前抽出不要
+- joint名マッピング: exact match → prefix stripping fallback
+- fps_limit + update_freq decimationでオーバーヘッド最小化
+
+---
+
 ## 実施日: 2026-04-05
 ## ブランチ: feat/fpo
 ## 作業: FPO++ 公式実装 (fpo-control) からの差分統合

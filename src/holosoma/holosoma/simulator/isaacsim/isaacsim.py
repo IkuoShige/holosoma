@@ -748,6 +748,9 @@ class IsaacSim(BaseSimulator):
         # Initialize bridge system using base class helper
         self._init_bridge()
 
+        # Initialize viser web viewer
+        self._init_viser_bridge()
+
         # Setup video recording after scene is ready
         if self.video_recorder:
             self.video_recorder.setup_recording()
@@ -835,6 +838,9 @@ class IsaacSim(BaseSimulator):
 
         # update buffers at sim
         self.scene.update(dt=1.0 / self.simulator_config.sim.fps)
+
+        # Update viser web viewer
+        self._step_viser_bridge()
 
         # Need to update these tensors after each step, since they are used in `_apply_force_in_physics_step`
         self.dof_pos = self._robot.data.joint_pos[:, self.dof_ids]  # (num_envs, num_dof)

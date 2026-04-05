@@ -164,6 +164,9 @@ class BaseSimulator:
         # Bridge system
         self.bridge: SimulatorBridge | None = None
 
+        # Viser web viewer bridge
+        self.viser_bridge = None  # ViserBridge | None, lazy import
+
         # To be overridden by subclasses
         self.height_samples = None
 
@@ -493,6 +496,33 @@ class BaseSimulator:
         """
         if self.bridge is not None:
             self.bridge.step()
+
+    # ----- Viser Web Viewer -----
+
+    def _init_viser_bridge(self) -> None:
+        """Initialize viser web viewer bridge if enabled.
+
+        Should be called by subclasses after robot assets are loaded
+        and after refresh_sim_tensors() has been called at least once.
+        """
+        if not self.simulator_config.viser.enabled:
+            return
+
+        try:
+            from holosoma.simulator.shared.viser_bridge import ViserBridge
+
+            self.viser_bridge = ViserBridge(self, self.simulator_config.viser)
+        except ImportError as e:
+            logger.warning(f"Viser requested but not installed: {e}")
+            logger.warning("Install with: pip install viser yourdfpy")
+        except Exception as e:
+            logger.error(f"Failed to initialize viser bridge: {e}")
+            raise
+
+    def _step_viser_bridge(self) -> None:
+        """Push current state to viser viewer if enabled."""
+        if self.viser_bridge is not None:
+            self.viser_bridge.update()
 
     # ----- Video Recording Interface -----
     def on_episode_start(self, env_id: int = 0) -> None:

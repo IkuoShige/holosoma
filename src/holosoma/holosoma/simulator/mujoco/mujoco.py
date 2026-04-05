@@ -366,6 +366,9 @@ class MuJoCo(BaseSimulator):
         # Initialize bridge system using base class helper
         self._init_bridge()
 
+        # Initialize viser web viewer
+        self._init_viser_bridge()
+
         if self.video_config.enabled:
             self.video_recorder = MuJoCoVideoRecorder(self.video_config, self)
             self.video_recorder.setup_recording()
@@ -905,6 +908,9 @@ class MuJoCo(BaseSimulator):
         # Call video recorder capture frame if recording is active
         if self.video_recorder and self.video_recorder.is_recording:
             self.capture_video_frame()
+
+        # Update viser web viewer
+        self._step_viser_bridge()
 
     def get_actor_states_by_index(self, indices: ActorIndices) -> ActorStates:
         """Get actor states using MuJoCo best practices with robot-only validation.

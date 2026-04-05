@@ -360,6 +360,9 @@ class IsaacGym(BaseSimulator):
         # Initialize bridge system using base class helper
         self._init_bridge()
 
+        # Initialize viser web viewer
+        self._init_viser_bridge()
+
         if self.video_recorder:
             self.video_recorder.setup_recording()
 
@@ -703,6 +706,9 @@ class IsaacGym(BaseSimulator):
         # Call video recorder capture frame if recording is active
         if self.video_recorder:
             self.capture_video_frame()
+
+        # Update viser web viewer
+        self._step_viser_bridge()
 
         self.gym.refresh_dof_state_tensor(self.sim)
 
