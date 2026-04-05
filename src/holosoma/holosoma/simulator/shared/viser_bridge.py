@@ -106,8 +106,10 @@ class ViserBridge:
     def _create_shadow_model(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
         """Load robot MJCF into a standalone MuJoCo model for FK-only rendering.
 
-        Strips ``<contact>`` section from XML before loading, since it
-        references external geoms (e.g. 'floor') absent in the shadow model.
+        The robot MJCF may reference external geoms (e.g. 'floor') in
+        ``<contact>`` pairs.  Instead of stripping them we inject a tiny
+        invisible floor plane so the MJCF compiles unmodified, preserving
+        the native mesh/texture loading path.
         """
         import mujoco as mj
         from xml.etree import ElementTree as ET
@@ -118,42 +120,35 @@ class ViserBridge:
         tree = ET.parse(mjcf_path)
         root = tree.getroot()
 
-        # Remove <contact> section (references floor/ground geoms)
-        for contact_elem in root.findall("contact"):
-            root.remove(contact_elem)
+        # Inject dummy floor geom into worldbody so contact pairs compile
+        worldbody = root.find("worldbody")
+        if worldbody is None:
+            worldbody = ET.SubElement(root, "worldbody")
+        ET.SubElement(worldbody, "geom", {
+            "name": "floor",
+            "type": "plane",
+            "size": "10 10 0.01",
+            "rgba": "0 0 0 0",  # fully transparent
+            "contype": "1",
+            "conaffinity": "1",
+        })
 
-        xml_string = ET.tostring(root, encoding="unicode")
+        # Write to temp file so MuJoCo resolves mesh paths relative to original dir
+        import tempfile
+        mjcf_dir = os.path.dirname(mjcf_path)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", dir=mjcf_dir, delete=False
+        ) as tmp:
+            tree.write(tmp, xml_declaration=True)
+            tmp_path = tmp.name
 
-        # MuJoCo needs the asset path for mesh files
-        import os
-        assets_dir = os.path.dirname(mjcf_path)
-        model = mj.MjModel.from_xml_string(xml_string, assets=self._load_mesh_assets(assets_dir, root))
+        try:
+            model = mj.MjModel.from_xml_path(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
         data = mj.MjData(model)
         return model, data
-
-    @staticmethod
-    def _load_mesh_assets(assets_dir: str, xml_root) -> dict[str, bytes]:
-        """Load mesh files referenced in MJCF as a dict for from_xml_string."""
-        import os
-        assets: dict[str, bytes] = {}
-
-        # Find mesh dir from <compiler meshdir="..."/>
-        mesh_dir = assets_dir
-        for compiler in xml_root.findall("compiler"):
-            meshdir = compiler.get("meshdir")
-            if meshdir:
-                mesh_dir = os.path.join(assets_dir, meshdir)
-                break
-
-        # Load all referenced mesh files
-        for mesh in xml_root.iter("mesh"):
-            mesh_file = mesh.get("file")
-            if mesh_file:
-                full_path = os.path.join(mesh_dir, mesh_file)
-                if os.path.isfile(full_path):
-                    assets[mesh_file] = open(full_path, "rb").read()
-
-        return assets
 
     def _resolve_mjcf_path(self) -> str:
         from holosoma.utils.module_utils import get_holosoma_root
