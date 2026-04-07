@@ -22,3 +22,11 @@ def pytest_configure(config):
         "markers",
         mark_str("requires_inference", "inference environment"),
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    )
+    config.addinivalue_line(
+        "markers",
+        mark_str("mujoco", "MuJoCo (or mujoco_warp) backend"),
+    )
