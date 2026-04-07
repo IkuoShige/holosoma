@@ -3,6 +3,8 @@ from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.config_values.loco.g1.experiment import (
     g1_29dof,
     g1_29dof_fast_sac,
+    g1_29dof_flash_sac,
+    g1_29dof_flash_sac_mjwarp,
     g1_29dof_fpo,
     g1_29dof_fpo_data,
     g1_29dof_fpo_pp,
@@ -24,6 +26,8 @@ from typing_extensions import Annotated
 DEFAULTS = {
     "g1_29dof": g1_29dof,
     "g1_29dof_fast_sac": g1_29dof_fast_sac,
+    "g1_29dof_flash_sac": g1_29dof_flash_sac,
+    "g1_29dof_flash_sac_mjwarp": g1_29dof_flash_sac_mjwarp,
     "g1_29dof_fpo": g1_29dof_fpo,
     "g1_29dof_fpo_data": g1_29dof_fpo_data,
     "g1_29dof_fpo_pp": g1_29dof_fpo_pp,

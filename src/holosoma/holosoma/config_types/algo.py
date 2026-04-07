@@ -630,6 +630,101 @@ class FPOAlgoConfig:
     """Algorithm-specific configuration."""
 
 
-AlgoInitConfig = Union[PPOConfig, FastSACConfig, FPOConfig]
+@dataclass(frozen=True)
+class FlashSACVendorConfig:
+    """Configuration for the holosoma adapter around vendored FlashSAC.
 
-AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig, FPOAlgoConfig]
+    This dataclass is the holosoma-side mirror of
+    :class:`holosoma._vendored.flash_rl.agents.flashSAC.agent.FlashSACConfig`,
+    plus a few holosoma-specific fields (``actor_obs_keys`` /
+    ``critic_obs_keys`` / ``num_learning_iterations`` / logging cadence) that
+    let the adapter integrate with holosoma's training loop and the
+    ``LeggedRobotLocomotionManager`` env contract.
+    """
+
+    # ---- holosoma loop cadence (NOT in upstream FlashSACConfig) ----------
+    num_learning_iterations: int = 50_000
+    """Total outer interaction steps to run (1 step ≈ 1 env collection per env)."""
+
+    logging_interval: int = 100
+    """Interval (interaction steps) at which to flush metrics to TensorBoard / W&B."""
+
+    save_interval: int = 1000
+    """Interval (interaction steps) at which to checkpoint."""
+
+    actor_obs_keys: List[str] = field(default_factory=lambda: ["actor_obs"])
+    """Observation manager group keys consumed by the FlashSAC actor."""
+
+    critic_obs_keys: List[str] = field(default_factory=lambda: ["critic_obs"])
+    """Observation manager group keys consumed by the FlashSAC critic (asymmetric obs)."""
+
+    # ---- 1:1 mirror of FlashSACConfig (vendored) -------------------------
+    seed: int = 0
+    normalize_reward: bool = True
+    normalized_G_max: float = 5.0
+    asymmetric_observation: bool = False
+    device_type: str = "cuda"
+
+    buffer_max_length: int = 10_000_000
+    buffer_min_length: int = 100_000
+    buffer_device_type: str = "cuda"
+    sample_batch_size: int = 2048
+
+    learning_rate_init: float = 3e-4
+    learning_rate_peak: float = 3e-4
+    learning_rate_end: float = 1.5e-4
+    learning_rate_warmup_rate: float = 1e-6
+    learning_rate_decay_rate: float = 1.0
+
+    actor_num_blocks: int = 2
+    actor_hidden_dim: int = 128
+    actor_bc_alpha: float = 0.0
+    actor_noise_zeta_mu: float = 2.0
+    actor_noise_zeta_max: int = 16
+    actor_update_period: int = 2
+
+    critic_num_blocks: int = 2
+    critic_hidden_dim: int = 256
+    critic_num_bins: int = 101
+    critic_min_v: float = -5.0
+    critic_max_v: float = 5.0
+    critic_target_update_tau: float = 0.01
+
+    temp_initial_value: float = 0.01
+    temp_target_sigma: float = 0.15
+    temp_target_entropy: float | None = None
+
+    gamma: float = 0.99
+    n_step: int = 3
+
+    use_compile: bool = True
+    compile_mode: str = "auto"
+    use_amp: bool = True
+
+    load_optimizer: bool = True
+    load_reward_normalizer: bool = True
+
+    updates_per_interaction_step: float = 2.0
+    """Number of gradient updates per interaction step (can be fractional)."""
+
+    eval_callbacks: Any = None
+    """Evaluation callbacks configuration (currently unused for FlashSAC)."""
+
+
+@dataclass(frozen=True)
+class FlashSACVendorAlgoConfig:
+    """Top-level wrapper for the FlashSAC vendor adapter (mirrors FastSACAlgoConfig)."""
+
+    _target_: str
+    """Target algorithm class (``holosoma.agents.flash_sac.flash_sac_agent.FlashSACAgent``)."""
+
+    _recursive_: bool
+    """Whether to recursively instantiate."""
+
+    config: FlashSACVendorConfig
+    """Algorithm-specific configuration."""
+
+
+AlgoInitConfig = Union[PPOConfig, FastSACConfig, FPOConfig, FlashSACVendorConfig]
+
+AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig, FPOAlgoConfig, FlashSACVendorAlgoConfig]

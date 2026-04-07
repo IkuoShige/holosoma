@@ -56,6 +56,57 @@ g1_29dof_fast_sac = ExperimentConfig(
     ),
 )
 
+g1_29dof_flash_sac = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_manager"),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            num_learning_iterations=50000,
+        ),
+    ),
+    # FlashSAC port targets the IsaacSim backend (Gate B). The vendored
+    # algorithm itself is simulator-agnostic; only the underlying physics
+    # backend differs from the existing g1_29dof_fast_sac (which uses
+    # IsaacGym).
+    simulator=simulator.isaacsim,
+    robot=robot.g1_29dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.g1_29dof_loco_single_wolinvel,
+    action=action.g1_29dof_joint_pos,
+    termination=termination.g1_29dof_termination,
+    randomization=randomization.g1_29dof_randomization,
+    command=command.g1_29dof_command,
+    curriculum=curriculum.g1_29dof_curriculum_fast_sac,
+    reward=reward.g1_29dof_loco_fast_sac,
+)
+
+g1_29dof_flash_sac_mjwarp = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_mjwarp_manager"),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            num_learning_iterations=50000,
+        ),
+    ),
+    # Same FlashSAC algorithm + same manager-based env, but driven by the
+    # GPU-accelerated MuJoCo Warp (mjwarp) backend instead of IsaacSim.
+    # Requires the ``hsmujoco`` conda env (Python 3.10, torch 2.10, mujoco_warp).
+    simulator=simulator.mjwarp,
+    robot=robot.g1_29dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.g1_29dof_loco_single_wolinvel,
+    action=action.g1_29dof_joint_pos,
+    termination=termination.g1_29dof_termination,
+    randomization=randomization.g1_29dof_randomization,
+    command=command.g1_29dof_command,
+    curriculum=curriculum.g1_29dof_curriculum_fast_sac,
+    reward=reward.g1_29dof_loco_fast_sac,
+)
+
 g1_29dof_fpo = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_fpo_manager"),
@@ -355,6 +406,8 @@ g1_29dof_fpo_pp = ExperimentConfig(
 __all__ = [
     "g1_29dof",
     "g1_29dof_fast_sac",
+    "g1_29dof_flash_sac",
+    "g1_29dof_flash_sac_mjwarp",
     "g1_29dof_fpo",
     "g1_29dof_fpo_data",
     "g1_29dof_fpo_pp",
