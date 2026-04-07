@@ -136,3 +136,76 @@ def test_bridge_handles_dict_action_contract() -> None:
     bridge.reset(random_start_init=False)
     bridge.step(np.zeros((2, env.dim_actions), dtype=np.float32))
     # If we got here, _MockBaseTask.step's assert on the action shape passed.
+
+
+def test_bridge_final_observations_full_batch_layout() -> None:
+    """Regression guard: ``extras["final_observations"][k]`` is a full-batch
+    tensor shaped ``(num_envs, obs_dim)``; the bridge must index it with the
+    current ``env_ids`` before assigning, otherwise we hit
+    ``RuntimeError: shape mismatch: value tensor of shape [num_envs, obs_dim]
+    cannot be broadcast to indexing result of shape [len(env_ids), obs_dim]``.
+
+    This was not caught by the earlier 64-env Gate B smoke because no env
+    terminated in 5 steps. The larger 4096-env run on a bigger GPU surfaced
+    the bug: two envs reset mid-episode, ``final_actor_obs[env_ids] =
+    stacked`` then failed because ``stacked`` was the full (num_envs, obs_dim)
+    tensor rather than its (len(env_ids), obs_dim) slice.
+    """
+
+    from holosoma.agents.flash_sac.flash_sac_env_bridge import FlashSACGymBridge
+
+    num_envs = 4096
+    actor_dim = 6
+    critic_dim = 4
+    env = _MockBaseTask(num_envs=num_envs, actor_dim=actor_dim, critic_dim=critic_dim)
+    bridge = FlashSACGymBridge(
+        env, actor_obs_keys=("actor_obs",), critic_obs_keys=("critic_obs",)
+    )
+    bridge.reset(random_start_init=False)
+
+    # Simulate holosoma's BaseTask layout:
+    #   - reset_buf has a few envs flipped true (like early termination)
+    #   - extras["final_observations"][k] is a FULL-BATCH tensor with
+    #     meaningful rows only at env_ids and zeros elsewhere.
+    reset_ids = torch.tensor([3, 17], dtype=torch.long)
+    reset_mask = torch.zeros((num_envs,), dtype=torch.bool)
+    reset_mask[reset_ids] = True
+    env.reset_buf = reset_mask
+    env.extras["time_outs"] = torch.zeros((num_envs,), dtype=torch.bool)
+    env.extras["time_outs"][3] = True  # one truncation, one termination
+
+    actor_final_full = torch.zeros((num_envs, actor_dim))
+    critic_final_full = torch.zeros((num_envs, critic_dim))
+    actor_final_full[3] = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    actor_final_full[17] = torch.tensor([7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
+    critic_final_full[3] = torch.tensor([100.0, 200.0, 300.0, 400.0])
+    critic_final_full[17] = torch.tensor([500.0, 600.0, 700.0, 800.0])
+    env.extras["final_observations"] = {
+        "actor_obs": actor_final_full,
+        "critic_obs": critic_final_full,
+    }
+
+    actions = np.zeros((num_envs, env.dim_actions), dtype=np.float32)
+    next_obs, rewards, terminated, truncated, info = bridge.step(actions)
+
+    # Shape sanity
+    assert next_obs.shape == (num_envs, actor_dim + critic_dim)
+    assert info["final_obs"].shape == (num_envs, actor_dim + critic_dim)
+
+    # Dones split
+    assert terminated[17] and not truncated[17]
+    assert truncated[3] and not terminated[3]
+    # No other env should be marked done
+    done_mask = terminated | truncated
+    assert int(done_mask.sum()) == 2
+
+    # The reset-env rows of ``final_obs`` must carry the stored final
+    # observations (concatenation of actor_obs and critic_obs).
+    np.testing.assert_array_equal(
+        info["final_obs"][3],
+        np.concatenate([actor_final_full[3].numpy(), critic_final_full[3].numpy()]),
+    )
+    np.testing.assert_array_equal(
+        info["final_obs"][17],
+        np.concatenate([actor_final_full[17].numpy(), critic_final_full[17].numpy()]),
+    )

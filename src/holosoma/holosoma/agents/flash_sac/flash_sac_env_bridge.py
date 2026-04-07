@@ -169,29 +169,44 @@ class FlashSACGymBridge(VectorEnv):
 
         # Synthesize the per-env "final observation" tensor that FlashSAC's
         # train loop reads to repair the next-obs entry on episode-end.
+        #
+        # Holosoma's ``extras["final_observations"][obs_key]`` is a persistent
+        # full-batch tensor of shape ``(num_envs, obs_dim)`` — ``BaseTask.
+        # _store_final_observations`` pre-allocates it via
+        # ``torch.zeros_like(obs_buf_dict[obs_key])`` and only updates rows that
+        # match the *current* step's ``env_ids``. Rows for non-resetting envs
+        # carry stale values from earlier resets (or zero). We therefore pull
+        # only the current ``env_ids`` rows out of the full tensor and write
+        # them into the matching rows of ``final_actor_obs``.
         final_actor_obs = actor_obs.clone()
         final_obs_dict = extras.get("final_observations") or {}
-        if reset_bool.any() and final_obs_dict:
+        env_ids = reset_bool.nonzero(as_tuple=False).flatten() if reset_bool.any() else None
+        if env_ids is not None and env_ids.numel() > 0 and final_obs_dict:
             try:
                 stacked = self._concat_groups(final_obs_dict, self._actor_obs_keys)
-                env_ids = reset_bool.nonzero(as_tuple=False).flatten()
-                # Holosoma stores final_observations only for the envs that reset,
-                # in the order returned by ``reset_buf.nonzero()`` (see BaseTask).
-                final_actor_obs[env_ids] = stacked
+                final_actor_obs[env_ids] = stacked[env_ids]
             except KeyError:
                 # Fall back to using the post-reset obs as the bootstrap target.
                 pass
 
         if self.asymmetric_obs and self._critic_obs_dim > 0:
             final_critic_obs = critic_obs.clone() if critic_obs is not None else None
-            if final_critic_obs is not None and reset_bool.any() and final_obs_dict:
+            if (
+                final_critic_obs is not None
+                and env_ids is not None
+                and env_ids.numel() > 0
+                and final_obs_dict
+            ):
                 try:
                     stacked_c = self._concat_groups(final_obs_dict, self._critic_obs_keys)
-                    env_ids = reset_bool.nonzero(as_tuple=False).flatten()
-                    final_critic_obs[env_ids] = stacked_c
+                    final_critic_obs[env_ids] = stacked_c[env_ids]
                 except KeyError:
                     pass
-            full_final = torch.cat((final_actor_obs, final_critic_obs), dim=-1) if final_critic_obs is not None else final_actor_obs
+            full_final = (
+                torch.cat((final_actor_obs, final_critic_obs), dim=-1)
+                if final_critic_obs is not None
+                else final_actor_obs
+            )
         else:
             full_final = final_actor_obs
 
