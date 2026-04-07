@@ -42,6 +42,7 @@ lint.ignore=[
 
 [tool.ruff.lint.per-file-ignores]
 "src/holosoma/holosoma/simulator/isaacsim/**/*.py" = ["ALL"]  # Disable until Jenkins has access to IsaacLab
+"src/holosoma/holosoma/_vendored/**/*.py" = ["ALL"]  # Vendored upstream code (FlashSAC); kept verbatim modulo namespace rewrite
 "src/holosoma/holosoma/train_agent.py" = ["PLC0415"]  # Disable since imports after SimApp are inherent to IsaacSim
 "src/holosoma/holosoma/utils/draw.py" = ["F401"]  # Disable since unused imports are required for the adapters
 "src/holosoma/holosoma/utils/eval_utils.py" = ["PLC0415"]  # Disable since imports after SimApp are inherent to IsaacSim
