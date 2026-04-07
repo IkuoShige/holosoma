@@ -336,7 +336,12 @@ g1_29dof_fpo_pp = ExperimentConfig(
         ),
     ),
     simulator=simulator.isaacgym,
-    robot=robot.g1_29dof,
+    # FPO++ requires tight action clipping (official: clip_actions=2.0 in env wrapper).
+    # Without it, unbounded flow outputs cause action_rate penalty explosion.
+    robot=replace(
+        robot.g1_29dof,
+        control=replace(robot.g1_29dof.control, action_clip_value=2.0),
+    ),
     terrain=terrain.terrain_locomotion_mix,
     observation=observation.g1_29dof_loco_single_wolinvel,
     action=action.g1_29dof_joint_pos,
