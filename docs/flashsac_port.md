@@ -2,7 +2,7 @@
 
 This document describes the holosoma port of [FlashSAC](https://github.com/joonleesky/FlashSAC) — the off-policy SAC variant published in *FlashSAC: Fast and Stable Off-Policy Reinforcement Learning for High-Dimensional Robot Control* (Kim et al., arXiv 2026).
 
-The port is **complete**: every Python module, every Hydra YAML, and every shell script under upstream `flash_rl/`, `configs/`, and `scripts/` is mirrored under holosoma. The only allowed deviations are mechanical (namespace rewrites) or quality-of-life (Hydra reinit safety, `parse_known_args`, library-form `train.py`). The original training loop body is byte-equivalent to upstream.
+> **Honest status (snapshot at the end of the porting sprint):** every upstream file is vendored, every test gate is green, the IsaacSim Gate B path can train a G1 policy that *eventually walks*, but the practical usability is still rough. FlashSAC will not converge against holosoma's standard locomotion reward — it requires a dedicated stripped-down preset that mirrors IsaacLab stock. Walking quality is "it's walking, but not benchmark-clean", and several auxiliary features (ONNX export, multi-GPU, `g1_29dof_loco` compatibility) are not done. See *Current state and limitations* and *Open work* below for the full picture.
 
 ## Three layers
 
@@ -19,14 +19,16 @@ src/holosoma/holosoma/
 │       └── ...
 └── agents/
     └── flash_sac/                  # Layer 2: holosoma-native BaseAlgo adapter
-        ├── flash_sac_agent.py      #   FlashSACAgent(BaseAlgo)
+        ├── flash_sac_agent.py      #   FlashSACAgent(BaseAlgo) + dual-format save/load + evaluate_policy
         └── flash_sac_env_bridge.py #   FlashSACGymBridge: BaseTask -> gym VectorEnv
 
 scripts/
-├── run_flashsac_isaaclab_smoke.sh  # Layer 3: Gate A (vendored train.py path)
-├── run_flashsac_holosoma_smoke.sh  # Layer 3: Gate B (holosoma BaseAlgo path)
+├── run_flashsac_isaaclab_smoke.sh   # Layer 3: Gate A (vendored train.py path)
+├── run_flashsac_holosoma_smoke.sh   # Layer 3: Gate B (holosoma BaseAlgo path)
+├── run_flashsac_mjwarp_smoke.sh     # Layer 3: Gate B-mjwarp
+├── flashsac_migrate_checkpoint.py   # convert legacy directory checkpoints to single-file .ckpt
 └── _vendored/flash_rl/
-    └── run_*.sh                    # All upstream batch-experiment scripts
+    └── run_*.sh                     # All upstream batch-experiment scripts
 ```
 
 ### Layer 1 — Verbatim vendoring
@@ -40,6 +42,7 @@ Every file under `/workspace/FlashSAC/flash_rl/` is copied to
 | `import isaaclab_tasks  # noqa: F401` | `_vendored/flash_rl/envs/isaaclab.py` | guarantees gymnasium task IDs are registered before `parse_env_cfg` |
 | `jax.numpy` import made optional | `_vendored/flash_rl/types.py` | jax is not installed in `hssim`; the FlashSAC torch path does not need it |
 | `train.py` refactored into `build_cfg / run / main(argv=None)` | `_vendored/flash_rl/train.py` | needed so Layer 2 can build configs in-process and so pytest can call `build_cfg` repeatedly without `GlobalHydra is already initialized` failures |
+| `play_isaaclab.py` refactored similarly | `_vendored/flash_rl/play_isaaclab.py` | same rationale (cwd-independent + idempotent + library form) |
 | `OmegaConf.register_new_resolver("eval", …)` made idempotent | `_vendored/flash_rl/__init__.py`, `_vendored/flash_rl/train.py` | second `register_new_resolver` call would otherwise raise |
 | `pyproject.toml` ruff per-file-ignores adds `_vendored/**/*.py = ["ALL"]` | repo root | vendored upstream code is exempt from holosoma's lint |
 
@@ -65,6 +68,7 @@ Translates between the holosoma `BaseTask` contract and the gymnasium `VectorEnv
 | Final obs (pre-reset) | `extras["final_observations"][group_key]` | `infos["final_obs"]` |
 | Action dim | `env.dim_actions` / `env.robot_config.actions_dim` | `single_action_space.shape` |
 | Actor obs dim | `env.dim_obs` | `infos["actor_observation_size"]` |
+| Action range | `tanh ∈ [-1, 1]` × bridge multiplier × env `action_scale` | `tanh ∈ [-1, 1]` × IsaacLab stock `scale=0.5` |
 
 The bridge handles the dones split:
 
@@ -73,13 +77,50 @@ truncated = time_outs.bool()
 terminated = reset_buf.bool() & ~truncated
 ```
 
-and re-stitches `final_obs` from `extras["final_observations"]` for envs that reset on the current step.
+and re-stitches `final_obs` from `extras["final_observations"]` (a persistent full-batch tensor) by indexing only the `env_ids` rows of the current step:
+
+```python
+env_ids = reset_bool.nonzero(as_tuple=False).flatten()
+final_actor_obs[env_ids] = stacked[env_ids]  # NOT `stacked` — see commit 0986f36
+```
+
+It also applies a **uniform per-axis action multiplier** so the actor's `tanh ∈ [-1, 1]` reaches the same effective ±0.5 rad joint target range that IsaacLab stock G1 uses (`JointPositionActionCfg(scale=0.5)`):
+
+```python
+multiplier = target_action_scale_rad / env.robot_config.control.action_scale
+            = 0.5 / 0.25
+            = 2.0  # uniform scalar, NOT per-joint
+```
+
+This is **not** FastSAC-style per-joint scaling (`max_range / env_action_scale`, which yields 8-13× factors and pushes FlashSAC's narrow deterministic policy into extreme joint configurations). It is the uniform scale FlashSAC's hyperparameters were tuned against. Pass `target_action_scale_rad=None` to disable when running against an env that already scales internally.
 
 #### `FlashSACAgent`
 
-Subclass of `holosoma.agents.base_algo.BaseAlgo`. Constructor wraps the holosoma env in `FlashSACGymBridge`, then `setup()` instantiates the vendored `FlashSACAgent` directly via `FlashSACConfig(**asdict(holosoma_dataclass))`. The `learn()` loop is in-line (mirroring upstream `train.py` lines 113-200) so it can plug into holosoma's logger / checkpoint conventions.
+Subclass of `holosoma.agents.base_algo.BaseAlgo`. Constructor wraps the holosoma env in `FlashSACGymBridge`, then `setup()` instantiates the vendored `FlashSACAgent` directly via `FlashSACConfig(**asdict(holosoma_dataclass))` (no OmegaConf round-trip; Hydra stays quarantined inside Layer 1).
 
-`learning_rate_warmup_step` and `learning_rate_decay_step` are computed at `setup()` time from `learning_rate_*_rate * num_learning_iterations * updates_per_interaction_step` (upstream Hydra computes these via `${eval: …}`).
+Key behaviors:
+
+- **`learn()`** mirrors upstream `train.py` lines 113-200, but accumulates `update_info` into a `window_update_info` dict that is flushed at every `logging_interval`. This is necessary because the vendored `_update_networks` only returns `actor/*` and `temperature/*` keys on even `update_step` calls (`_update_step % actor_update_period == 0`); naïvely overwriting the dict each call drops actor metrics whenever the last update of a logging window happens to be an odd step. With `actor_update_period=2` and `updates_per_interaction_step=2.0` and `logging_interval=100`, the parity is always odd → actor metrics would otherwise never appear in TensorBoard. See commit `d37b991`.
+- **`evaluate_policy(max_eval_steps)`** runs deterministic rollouts through the bridge using `sample_actions(training=False)`. Lets `holosoma.eval_agent.py` drive the FlashSAC adapter.
+- **Dual-format `save(path, name="model.ckpt")`** writes BOTH the vendored per-component directory (`actor.pt`, `critic.pt`, `target_critic.pt`, `temperature.pt`, `reward_normalizer.pt`, `agent_state.pt` — for upstream `play_isaaclab.py` compatibility) AND a single `.ckpt` file at `<path>/<name>` containing the same component contents inline plus the holosoma `_checkpoint_metadata` (experiment_config, wandb_run_path, iteration). The `.ckpt` is what `eval_agent.py` ingests.
+- **`load(ckpt_path)`** auto-detects file vs directory. A directory defers to the vendored loader; a `.ckpt` unpacks `flashsac_components` into a tempdir and re-uses the vendored loader so the on-disk format stays the single source of truth.
+- The adapter forces `load_reward_normalizer=False` whenever `normalize_reward=False` so the upstream `assert reward_normalizer is not None` footgun (when normalize_reward was off during training but load_reward_normalizer defaulted to True at eval) cannot fire.
+- `learning_rate_warmup_step` and `learning_rate_decay_step` are computed at `setup()` time from `learning_rate_*_rate * num_learning_iterations * updates_per_interaction_step` (upstream Hydra computes these via `${eval: …}`).
+
+#### Checkpoint migration script
+
+`scripts/flashsac_migrate_checkpoint.py` converts a legacy directory-only checkpoint
+(saved by `FlashSACAgent.save` *before* the dual-format change) into the single-file
+`.ckpt` that `eval_agent.py` expects:
+
+```bash
+python scripts/flashsac_migrate_checkpoint.py \
+    logs/hv-g1-manager/<timestamp>-...-locomotion/flashsac_step50000
+```
+
+It reads each component `.pt` from the directory plus the sibling `holosoma_config.yaml`,
+packs them into `flashsac_step50000.ckpt` next to the directory, and exits 0.
+After migration, point `--checkpoint` at the `.ckpt` file.
 
 ### Layer 3 — Smoke gates
 
@@ -91,13 +132,133 @@ Subclass of `holosoma.agents.base_algo.BaseAlgo`. Constructor wraps the holosoma
 
 The IsaacSim e2e tests are marked `@pytest.mark.isaacsim @pytest.mark.slow` and the mjwarp e2e test is marked `@pytest.mark.mujoco @pytest.mark.slow`. All three shell out to bash via `subprocess.run` so each invocation runs in a fresh Python process — required because IsaacSim is single-process per `AppLauncher` and to keep the two conda envs (`hssim` vs `hsmujoco`) cleanly separated.
 
+Test counts as of this snapshot: **14 unit tests + 3 e2e smoke tests = 17 total**, all green on RTX 5090 / hssim.
+
+## Reward and observation: holosoma is incompatible with FlashSAC's hyperparameters
+
+This is the single most important finding from the porting sprint and the
+biggest blocker on calling FlashSAC "fully usable in holosoma".
+
+### What FlashSAC's hyperparameters assume
+
+FlashSAC's `configs/agent/flashSAC.yaml` defaults (and the `scripts/run_isaaclab.sh`
+preset) were tuned exclusively against IsaacLab's stock
+`Isaac-Velocity-Flat-G1-v0` task in
+`isaaclab_tasks/manager_based/locomotion/velocity/velocity_env_cfg.py`. That
+task's reward and observation shape is:
+
+```python
+# IsaacLab stock G1 flat
+JointPositionActionCfg(scale=0.5)            # uniform action scale, ±0.5 rad
+
+# rewards
+track_lin_vel_xy_exp     weight=1.0  std=sqrt(0.25)
+track_ang_vel_z_exp      weight=0.5  std=sqrt(0.25)
+lin_vel_z_l2             weight=-2.0
+ang_vel_xy_l2            weight=-0.05
+flat_orientation_l2      weight=0.0   # disabled in flat task
+dof_torques_l2           weight=-1.0e-5
+dof_acc_l2               weight=-2.5e-7
+feet_air_time            weight=0.125
+# NO alive, NO feet_phase, NO pose, NO close_feet_xy, NO feet_ori
+# NO sin_phase / cos_phase observation terms
+```
+
+Crucially, FlashSAC's actor collapses to a near-deterministic policy very
+early (entropy hits the heuristic target ≈ -14 for 29-D actions within ~10 k
+gradient steps, temperature drops to ~3 × 10⁻⁴). Once narrow, the policy
+exploits whatever local optimum is closest to its initial distribution and
+cannot break out by noise alone. This is fine when the reward landscape's
+dominant gradient points toward walking — which it does for IsaacLab stock,
+because the only positive signals are tracking + air-time.
+
+### What goes wrong with holosoma's standard reward
+
+Holosoma's `g1_29dof_loco` (PPO default) and `g1_29dof_loco_fast_sac`
+(FastSAC preset) both add several shaping terms that are absent from
+IsaacLab stock:
+
+| Term | Holosoma weight | IsaacLab stock | Why FlashSAC trips on it |
+|---|---|---|---|
+| `feet_phase` | +5.0 (σ=0.008) | not present | Pure foot-height tracking against a clock-phase observation. **No coupling to forward velocity, COM progression, or stance impulse.** A near-deterministic policy harvests it by lifting and putting down feet in place to match the clock — without ever moving forward. In our second-to-last training run it dominated the per-term reward decomposition (+36 cumulative ep_sum vs +14 for `tracking_lin_vel`). |
+| `alive` (FastSAC preset) | +10.0 | not present | Constant +10 per step for not falling. Together with the modest tracking max (~+3.5), best-case standing reward (~+10) competes with best-case walking reward (~+13.5). FastSAC's wide action_std explores past it; FlashSAC's narrow policy locks onto the +10 attractor. |
+| `alive` (PPO preset) | +1.0 | not present | Even at weight 1.0, with all the *other* shaping terms removed it still pulls the policy toward standing. |
+| `pose` | -0.5 × per-joint | not present | Per-joint default-pose deviation penalty with **50.0 weight on every upper-body joint** (17 joints × 50 = -850 max upper-body penalty). Strongly discourages the torso sway any walking gait produces. |
+| `penalty_close_feet_xy` | -10.0 (binary, threshold 0.15) | not present | Hard threshold penalty. |
+| `penalty_feet_ori` | -5.0 | not present | Foot orientation penalty. |
+| `penalty_orientation` | -10.0 | flat task: weight 0.0 | Strong torso-tilt penalty. |
+| `penalty_action_rate` | -2.0 | -0.005 (via dof_torques/dof_acc) | 400× stronger than IsaacLab. Penalizes any large step-to-step action change, which is exactly what walking gait requires. |
+
+Combined: every holosoma-specific term either creates a "fake walking"
+attractor (feet_phase, alive) or punishes the very motions a walking gait
+needs (pose on upper body, action_rate at -2.0, orientation at -10.0). The
+narrow FlashSAC policy lands in the locally-best-rewarded basin — which is
+"stand still" or "twitch feet to match the clock without going anywhere" —
+and stays there.
+
+### The dedicated FlashSAC reward / observation preset
+
+To work around this we added two new presets used **only** by the FlashSAC
+experiments. They mirror IsaacLab stock's reward shape and are deliberately
+NOT shared with PPO/FastSAC/FPO.
+
+`config_values/loco/g1/observation.py` — `g1_29dof_loco_single_flashsac`:
+
+```
+actor_obs (7 terms, no phase clock):
+  base_ang_vel, projected_gravity, command_lin_vel, command_ang_vel,
+  dof_pos, dof_vel, actions
+
+critic_obs (8 terms = same + base_lin_vel):
+  base_lin_vel, base_ang_vel, projected_gravity, command_lin_vel,
+  command_ang_vel, dof_pos, dof_vel, actions
+```
+
+`sin_phase` / `cos_phase` are removed because the phase clock is only
+meaningful when paired with `feet_phase`. Stripping it removes the input
+the policy could otherwise use to time the in-place clock-matching exploit.
+
+`config_values/loco/g1/reward.py` — `g1_29dof_loco_flashsac`:
+
+```
+tracking_lin_vel    weight=2.0   sigma=0.25
+tracking_ang_vel    weight=1.5   sigma=0.25
+penalty_ang_vel_xy  weight=-0.05  (was -1.0; matches IsaacLab)
+penalty_orientation weight=-1.0   (was -10.0)
+penalty_action_rate weight=-0.005 (was -2.0; was killing walking)
+```
+
+Removed entirely: `feet_phase`, `alive`, `pose`, `penalty_feet_ori`,
+`penalty_close_feet_xy`. PPO/FastSAC presets are unchanged.
+
+`config_values/loco/g1/experiment.py` wires both `g1_29dof_flash_sac` and
+`g1_29dof_flash_sac_mjwarp` to use these presets.
+
+### Trial-and-error history (so future contributors do not repeat it)
+
+Six training attempts on G1 walking, each diagnosing one layer:
+
+| # | Run dir suffix | Fix applied | Result | Root cause unblocked |
+|---|---|---|---|---|
+| 1 | `20260407_170834` | (initial port) | Stands still, dist 0.20 m / 10 s | Action range `±0.25 rad` was 8-11% of hip joint range |
+| 2 | `20260408_065029` | re-train with no changes (was actually re-running attempt 1's recipe) | Same as #1 | – |
+| 3 | `20260408_083642` | per-joint scaling 13× (FastSAC-style) | Robot thrashes, root z=0.24, reward -8.9 | Per-joint scaling too aggressive for FlashSAC's narrow policy |
+| 4 | `20260408_094513` | uniform scaling 2× (= IsaacLab stock 0.5 rad) | Robot upright, dist 0.27 m / 10 s | Action range fixed; reward shape still wrong |
+| 5 | `20260408_124759` | switched reward `_fast_sac` (alive=10) → `g1_29dof_loco` (alive=1) | Robot upright, dist 0.049 m / 500 steps; **`feet_phase` ep_sum +36 dominated** | alive bonus reduced; feet_phase exploit revealed |
+| 6 | `20260408_142832` | dedicated `g1_29dof_loco_flashsac` reward + `g1_29dof_loco_single_flashsac` obs (this preset) | **Walking** (not pretty, but walking) | Reward shape stripped to IsaacLab-stock minimum |
+
+Codex was consulted at attempt #5 → #6 transition and converged on the same
+diagnosis (degenerate `feet_phase` attractor + restrictive pose penalty +
+narrow FlashSAC policy = "step in place and torso-locked" local optimum).
+
 ## Running on MuJoCo Warp (mjwarp)
 
 The same `FlashSACAgent(BaseAlgo)` adapter also works with the GPU-accelerated
 MuJoCo Warp backend, because the bridge talks to `BaseTask` (simulator-agnostic)
 rather than to the IsaacSim API directly. A sister experiment
 `g1_29dof_flash_sac_mjwarp` is wired with `simulator=simulator.mjwarp` and lives
-alongside the IsaacSim variant.
+alongside the IsaacSim variant. Both use the same `g1_29dof_loco_flashsac`
+reward and `g1_29dof_loco_single_flashsac` observation presets.
 
 Required setup (one-time):
 
@@ -113,14 +274,14 @@ bash scripts/run_flashsac_mjwarp_smoke.sh
 # tunables (env vars): FLASHSAC_NUM_ENVS, FLASHSAC_SEED, FLASHSAC_NUM_ITERS
 ```
 
-Full run:
+Full run (note: untested at scale — only 5-step smoke has been run):
 
 ```bash
 source scripts/source_mujoco_setup.sh
 
 python src/holosoma/holosoma/train_agent.py exp:g1-29dof-flash-sac-mjwarp \
   --training.num-envs=1024 \
-  --algo.config.num-learning-iterations=50000 \
+  --algo.config.num-learning-iterations=48829 \
   --training.headless=True
 ```
 
@@ -141,6 +302,92 @@ Notes:
   so the smoke script pre-initializes it before sourcing under `set -u`.
 - The two backends share artifact paths; checkpoints land at
   `logs/hv-g1-manager/<timestamp>-g1_29dof_flash_sac_mjwarp_manager-locomotion/flashsac_step{N}/`.
+
+## Training and play recipes
+
+### Recommended training (IsaacSim, paper-matched ratio)
+
+```bash
+git pull
+source scripts/source_isaacsim_setup.sh
+
+python src/holosoma/holosoma/train_agent.py exp:g1-29dof-flash-sac \
+  --training.num-envs=1024 \
+  --algo.config.num-learning-iterations=48829 \
+  --training.headless=True
+```
+
+`num_envs=1024` and `num_learning_iterations=48829` matches FlashSAC's paper
+preset exactly (`scripts/run_isaaclab.sh`: `num_train_envs=1024`,
+`num_env_steps=50_000_896` ≈ 48 829 interaction steps × 1 024 envs).
+Larger `num_envs` (e.g. 4 096) requires `updates_per_interaction_step` to be
+scaled up by the same factor (so 8.0 instead of 2.0) to keep the
+update-to-sample ratio at the paper's ~1.95 × 10⁻³. Using `num_envs=4 096`
+with the default `updates_per_interaction_step=2.0` gives a 4× lower update
+ratio and produces an under-trained policy.
+
+Useful tunables to override on the CLI:
+
+```
+--algo.config.use-compile=False   # disable torch.compile if hitting cache issues
+--algo.config.use-amp=False       # disable AMP if hitting fp16 instability
+--algo.config.normalize-reward=False
+--algo.config.temp-target-sigma=0.30   # widen target entropy (default 0.15)
+                                       # — see "Open work" below
+```
+
+### Watch metrics
+
+A successful walking training should look like:
+
+| metric | early | mid | late |
+|---|---|---|---|
+| `flashsac/critic/loss` | ~5 | ~1 | < 1.5 (still trending down or stable) |
+| `flashsac/actor/loss` | ~+0.1 | ~-0.5 | continuing to decrease |
+| `flashsac/actor/entropy` | ~0 | -10 | -14 (target) |
+| `flashsac/temperature/value` | 0.01 | < 0.001 | collapsed (this is normal) |
+| `flashsac/actor/mean_action` | ~0 | grows | non-trivial spread per joint |
+
+Red flags from past failed runs:
+
+- `actor/loss ≈ 0` for the entire run → policy stuck at a flat-Q local optimum
+- `critic/loss` rises after midpoint → actor/critic divergence (policy exploiting
+  a region the critic cannot value)
+- `actor/loss` decreases but `mean_action ≈ 0` → policy collapsed to outputting nothing
+
+### Play / evaluation
+
+Step 1 — migrate any *legacy* (directory-only) checkpoint to the dual format
+that `eval_agent.py` understands:
+
+```bash
+python scripts/flashsac_migrate_checkpoint.py \
+    logs/hv-g1-manager/<timestamp>-...-locomotion/flashsac_step48829
+```
+
+Checkpoints saved by the *current* `FlashSACAgent.save` already produce both
+formats automatically, so this step is only needed for runs from before the
+dual-format change.
+
+Step 2 — run `eval_agent.py` against the `.ckpt` file:
+
+```bash
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint logs/hv-g1-manager/<timestamp>-...-locomotion/flashsac_step48829.ckpt \
+    --training.num-envs=16 \
+    --training.headless=False \
+    --training.max-eval-steps=2000 \
+    --training.export-onnx=False              # required: ONNX export not implemented
+    --algo.config.load-reward-normalizer=False  # optional; auto-handled when normalize_reward=False
+```
+
+Notes:
+
+- Do **not** pass `exp:g1-29dof-flash-sac` here. `eval_agent.py` reads the base
+  config from the `.ckpt` directly; CLI args layer overrides on top.
+- `--training.export-onnx=False` is required because
+  `FlashSACAgent.actor_onnx_wrapper` raises `NotImplementedError`.
+- `--training.headless=False` opens the viser viewer.
 
 ## Smoke override cheat sheet
 
@@ -189,54 +436,195 @@ find "$DST" -name '*.py' | xargs -I {} perl -i -pe '
     s/(\bfrom\s+)flash_rl(\.|\s)/$1holosoma._vendored.flash_rl$2/g;
     s/(\bimport\s+)flash_rl(\.|\s|$)/$1holosoma._vendored.flash_rl$2/g;
 ' {}
-# 4. Re-apply the train.py refactor patches if upstream touched train.py
-# 5. Re-run unit tests
+# 4. Re-apply the train.py / play_isaaclab.py refactor patches if upstream touched them
+# 5. Re-apply the bridge action-scaling change if upstream changed sample_actions
+# 6. Re-run unit tests
 pytest tests/unit/test_flash_rl_vendor.py tests/unit/test_flash_sac_bridge.py -v
-# 6. Re-run Gate A smoke
+# 7. Re-run Gate A smoke
 bash scripts/run_flashsac_isaaclab_smoke.sh
 ```
 
 ## Verification status
 
-| Phase | What | Status | Wall-clock |
-|---|---|---|---|
-| 0 | Pre-flight | ✅ all deps present, G1 task registered, Hydra reinit OK | <30 s |
-| 1 | Verbatim vendoring | ✅ 44 .py + 13 yaml + train.py + play_isaaclab.py + 8 scripts | – |
-| 1.5 | `train.py` library refactor | ✅ build_cfg/run/main, idempotent compose | – |
-| 2 | Unit tests (CPU) | ✅ 7/7 pytest pass | ~3 s |
-| 3 | Gate A manual run | ✅ 5/5 tqdm, TensorBoard event with 5 critic updates + 3 actor updates | ~13 s |
-| 4 | Gate A pytest e2e | ✅ pass | ~12 s |
-| 5 | Layer 2 adapter | ✅ bridge, agent, config, experiment, subcommand registered | – |
-| 5b | Bridge unit tests | ✅ 4/4 pytest pass (mock BaseTask) | ~1 s |
-| 6 | Gate B manual run (IsaacSim) | ✅ 5/5 tqdm, holosoma checkpoint dir + TensorBoard event | ~14 s |
-| 6b | Gate B pytest e2e (IsaacSim) | ✅ pass | ~19 s |
-| 6c | Gate B-mjwarp manual run | ✅ 5/5 tqdm, mjwarp checkpoint dir + TensorBoard event | ~13 s |
-| 6d | Gate B-mjwarp pytest e2e | ✅ pass | ~20 s |
-| 7 | Vendored shell scripts | ✅ 8 scripts under `scripts/_vendored/flash_rl/` | – |
-| 8 | Docs | ✅ this file | – |
+| Phase | What | Status |
+|---|---|---|
+| 0 | Pre-flight (deps, G1 task registration, Hydra reinit) | ✅ |
+| 1 | Verbatim vendoring (44 .py + 13 yaml + train.py + play_isaaclab.py + 8 scripts) | ✅ |
+| 1.5 | `train.py` library refactor (`build_cfg`/`run`/`main`) | ✅ |
+| 2 | Unit tests (CPU) — 7 vendor + 7 bridge & adapter | ✅ 14/14 |
+| 3 | Gate A manual run | ✅ |
+| 4 | Gate A pytest e2e | ✅ |
+| 5 | Layer 2 adapter (bridge, agent, config, experiment, subcommand) | ✅ |
+| 6 | Gate B manual run (IsaacSim) | ✅ |
+| 6b | Gate B pytest e2e (IsaacSim) | ✅ |
+| 6c | Gate B-mjwarp manual run | ✅ (smoke only) |
+| 6d | Gate B-mjwarp pytest e2e | ✅ |
+| 7 | Vendored shell scripts (8 under `scripts/_vendored/flash_rl/`) | ✅ |
+| 8 | Docs (this file) | ✅ |
+| 9 | `play_isaaclab.py` library refactor | ✅ |
+| 10 | `eval_agent.py` integration via dual-format `.ckpt` | ✅ |
+| 11 | Checkpoint migration script for legacy directories | ✅ |
+| 12 | **Walking on G1 IsaacSim with the FlashSAC-tuned reward preset** | ⚠️ "kind of walking" (not benchmark-clean) |
+| 13 | Walking on G1 with `reward.g1_29dof_loco` (PPO default) | ❌ converges to stand-still |
+| 14 | Full mjwarp training (not just smoke) | ❌ untested |
+| 15 | ONNX export | ❌ raises NotImplementedError |
+| 16 | Multi-GPU validation | ❌ untested |
+| 17 | T1 / K1 / WBT compatibility | ❌ untested |
 
-## Known limitations / non-goals
+## Current state and limitations
 
-- **ONNX export**: `FlashSACAgent.actor_onnx_wrapper` raises `NotImplementedError`. Implementing ONNX export was out of scope for the smoke proof.
-- **Multi-GPU**: The adapter accepts `multi_gpu_cfg` but the underlying vendored agent is single-process. Multi-GPU support is a follow-up.
-- **`torch.compile` / AMP**: Both default to `True` in the holosoma config but are disabled in the smoke scripts. The compile path uses `reduce-overhead` mode on torch 2.7.0 (verified by `_resolve_compile_mode('auto')`).
-- **Optional simulator wrappers** (`mujoco_playground`, `genesis`, `dmc`, etc.): vendored verbatim but never imported in the IsaacSim hot path; they are deferred imports in `flash_rl/envs/__init__.py`.
-- **`asymmetric_observation` mode** is supported by the bridge but not exercised by the G1 smoke (the stock `Isaac-Velocity-Flat-G1-v0` task uses a single `policy` observation group).
+The port is **functionally complete** as a holosoma-installable RL algorithm:
+the bridge exists, the adapter wires through `train_agent.py`, the eval flow
+works through `eval_agent.py`, all 17 tests are green on hssim, and the
+checkpoint format is compatible with holosoma's standard inspection tools.
+
+The port is **not production-quality** in the following ways:
+
+### 1. FlashSAC requires a dedicated reward and observation preset
+
+`FlashSAC` cannot use `reward.g1_29dof_loco` (PPO default), let alone the FastSAC preset. It requires the stripped-down `g1_29dof_loco_flashsac` reward and `g1_29dof_loco_single_flashsac` observation that mirror IsaacLab stock as closely as possible. Six training attempts confirmed this empirically. Adding any of {`feet_phase`, `alive ≥ 1.0`, `pose` with upper-body weight 50, `penalty_action_rate ≤ -2.0`, sin/cos phase obs} can drive FlashSAC into a degenerate local optimum.
+
+This means **adding FlashSAC support to a new robot or task in holosoma is not as simple as adding a new experiment subcommand** — you have to also create a stripped-down reward and observation preset matching the IsaacLab-stock pattern.
+
+### 2. Walking quality is "it walks" not "benchmark-clean"
+
+The latest training run (`20260408_142832`) produces a policy that visibly walks but the gait is "綺麗ではない" (not pretty). FlashSAC's paper benchmarks on `Isaac-Velocity-Flat-G1-v0` show much higher fidelity. The gap is most likely due to:
+
+- holosoma's reward shape, even after stripping, differs from IsaacLab stock in
+  small ways (tracking sigma, term names, command sampling distribution,
+  termination conditions)
+- holosoma's action manager applies a fixed `0.25 × tanh × bridge_multiplier`
+  instead of IsaacLab's direct `0.5 × tanh` — there is a small extra layer of
+  PD control inside holosoma's `JointPositionActionTerm`
+- Hyperparameters (especially `temp_target_sigma`, `actor_noise_zeta_*`) have
+  not been tuned for holosoma's specific reward landscape
+
+### 3. Hyperparameters are stock paper defaults, not holosoma-tuned
+
+Every hyperparameter in `algo.flash_sac` is the upstream `configs/agent/flashSAC.yaml` default. No tuning was done for holosoma's reward, action layer, or simulator backend.
+
+### 4. Several auxiliary features are unimplemented
+
+- `actor_onnx_wrapper` raises `NotImplementedError`
+- Multi-GPU is not validated (the adapter accepts `multi_gpu_cfg` but the
+  vendored agent is single-process under the hood)
+- Resume-from-checkpoint is supported by the dual-format `.ckpt` but never
+  tested in continuous training
+- `g1_29dof_flash_sac_mjwarp` has only been smoke-tested (5 steps); never
+  trained to convergence
+- T1, K1, WBT robots have no FlashSAC experiment configs
+
+### 5. Six legacy checkpoints are mutually incompatible
+
+Each major fix changed the env transition the policy learns against
+(action-scale regime, reward shape), so no two of the six training runs
+share a compatible policy. Only `20260408_142832` is currently meaningful.
+
+### 6. Some port-side details have not been deeply audited
+
+Codex's review at the end of the porting sprint flagged a checklist of
+port-side things to verify carefully if walking did not converge. After the
+reward fix made walking emerge, those items were not re-checked at code
+level. Specifically:
+
+- `_sample_flashsac_actions` — confirm stochastic sample is used during
+  data collection and `tanh(mean)` only at eval; confirm tanh-squash log-prob
+  correction is present in `update_actor`
+- Target entropy sign and magnitude for 29-D actions — heuristic gives ≈ -14,
+  worth confirming the sign convention matches the actor's entropy
+  computation
+- Bridge `terminated` vs `truncated` handling alignment with the n-step
+  buffer's reset semantics
+- Reward and done arrays alignment with the same transition row in the
+  replay buffer
+
+These are subtle but important. If walking quality remains a concern after
+hyperparameter tuning, these are the next things to inspect.
+
+## Open work
+
+Suggested order, in increasing scope:
+
+1. **Re-run with `temp_target_sigma=0.30` (was 0.15)** against the current
+   `g1_29dof_loco_flashsac` preset. The narrow target entropy is the main
+   reason FlashSAC exploits any reward-shaping local optimum so aggressively.
+   Widening it should improve walking quality on the same preset. ~45 min.
+2. **Try widening to `temp_target_sigma=0.30` *and* swap reward back to
+   `g1_29dof_loco` (PPO default with alive=1.0)**. If this trains to walking,
+   the dedicated FlashSAC reward preset becomes optional rather than required
+   and the port becomes much more usable across holosoma's reward zoo. ~45 min.
+3. **Audit the port-side items Codex flagged.** Specifically the four
+   bullets at the end of "Current state and limitations". Reading-only,
+   1-2 hours.
+4. **Implement `actor_onnx_wrapper`**. Mirror `FastSACAgent.actor_onnx_wrapper`
+   but with the FlashSAC actor's `get_mean_and_std` head. ~1-2 hours.
+5. **Full mjwarp training.** Run the full 48 829-iteration recipe in
+   `hsmujoco` and confirm walking quality is comparable to the IsaacSim run.
+6. **Multi-GPU validation.** Run `torchrun --nproc_per_node=2
+   train_agent.py exp:g1-29dof-flash-sac …` and confirm gradients converge.
+7. **T1 / K1 experiment configs.** Add `t1_29dof_flash_sac` and
+   `k1_22dof_flash_sac` plus matching FlashSAC-tuned reward / observation
+   presets for each robot.
+8. **Re-train all FlashSAC G1 runs** with the converged hyperparameters and
+   the reward preset that ends up working, and replace the legacy
+   checkpoints with a single canonical "good" checkpoint and a recorded run.
+9. **WBT (whole-body tracking) compatibility** — much harder, since WBT has
+   a different action and observation schema and FlashSAC's collapse
+   dynamics may be even harsher there.
+
+Tasks 1 and 2 are by far the highest leverage: a single 45-minute training
+run answers whether holosoma's reward zoo can be supported without the
+dedicated FlashSAC preset.
+
+## Commit history (porting sprint)
+
+The full sequence of fixes, in commit order:
+
+| hash | what it fixed |
+|---|---|
+| `f3857eb` | Initial verbatim vendoring of every flash_rl file + configs + scripts |
+| `a6879be` | Layer 2 adapter (`FlashSACAgent` + `FlashSACGymBridge`) + experiment configs |
+| `2be11be` | Unit tests, e2e smoke tests, conftest markers |
+| `0b6ad39` | First version of this docs file |
+| `0986f36` | Bridge `final_obs` indexing fix (was assigning full tensor instead of `env_ids` slice) |
+| `35166cb` | `play_isaaclab.py` library refactor for cwd-independence |
+| `72899c1` | Dual-format checkpoint save/load + `evaluate_policy` + migration script |
+| `d37b991` | Logging fix: accumulate `update_info` across window so actor metrics actually appear |
+| `f3165c7` | Per-joint action scaling (FastSAC-style) — *superseded* |
+| `d2faae4` | **Uniform action scaling matching IsaacLab stock G1 (`scale=0.5`)** |
+| `bc57ff3` | Switch reward to `g1_29dof_loco` (alive=1.0) — *superseded by next* |
+| `a05648b` | **Dedicated `g1_29dof_loco_flashsac` reward + `g1_29dof_loco_single_flashsac` observation preset** |
+| (this commit) | Updated docs reflecting actual state at end of porting sprint |
+
+`f3165c7` and `bc57ff3` are kept in history rather than rebased away because
+the trial-and-error process is part of how to interpret the port: each
+commit unblocked one diagnostic layer and reading them in order is the
+fastest way to understand why the current `FlashSACGymBridge` and
+`g1_29dof_loco_flashsac` look the way they do.
 
 ## File index
-
-A complete map of every vendored file is generated at port time and lives at:
 
 ```
 src/holosoma/holosoma/_vendored/flash_rl/    (44 .py files)
 src/holosoma/holosoma/_vendored/flash_rl/configs/  (13 .yaml files)
 scripts/_vendored/flash_rl/                  (8 .sh files)
 src/holosoma/holosoma/agents/flash_sac/      (3 .py files)
+src/holosoma/holosoma/config_types/algo.py            (FlashSACVendorConfig + FlashSACVendorAlgoConfig added)
+src/holosoma/holosoma/config_values/algo.py           (flash_sac default added)
+src/holosoma/holosoma/config_values/loco/g1/observation.py (g1_29dof_loco_single_flashsac added)
+src/holosoma/holosoma/config_values/loco/g1/reward.py     (g1_29dof_loco_flashsac added)
+src/holosoma/holosoma/config_values/loco/g1/experiment.py (g1_29dof_flash_sac, g1_29dof_flash_sac_mjwarp added)
+src/holosoma/holosoma/config_values/observation.py    (g1_29dof_loco_single_flashsac registered)
+src/holosoma/holosoma/config_values/reward.py         (g1_29dof_loco_flashsac registered)
+src/holosoma/holosoma/config_values/experiment.py     (subcommands registered)
 tests/unit/test_flash_rl_vendor.py
 tests/unit/test_flash_sac_bridge.py
 tests/e2e/test_flashsac_isaaclab_smoke.py
 tests/e2e/test_flashsac_holosoma_smoke.py
+tests/e2e/test_flashsac_mjwarp_smoke.py
 scripts/run_flashsac_isaaclab_smoke.sh
 scripts/run_flashsac_holosoma_smoke.sh
+scripts/run_flashsac_mjwarp_smoke.sh
+scripts/flashsac_migrate_checkpoint.py
 docs/flashsac_port.md
 ```
