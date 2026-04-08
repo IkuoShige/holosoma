@@ -116,4 +116,105 @@ g1_29dof_loco_single_wolinvel = ObservationManagerCfg(
     }
 )
 
-__all__ = ["g1_29dof_loco_single_wolinvel"]
+# Observation preset for FlashSAC, mirroring IsaacLab stock
+# ``Isaac-Velocity-Flat-G1-v0`` exactly: standard locomotion observations
+# without the ``sin_phase`` / ``cos_phase`` clock terms. The phase clock is
+# only meaningful when the reward function couples to it (via ``feet_phase``);
+# stripping it out aligns FlashSAC with the upstream tuning baseline and
+# removes a degenerate "step in place to match clock" attractor that
+# FlashSAC's narrow deterministic policy collapses to.
+g1_29dof_loco_single_flashsac = ObservationManagerCfg(
+    groups={
+        "actor_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=True,
+            history_length=1,
+            terms={
+                "base_ang_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:base_ang_vel",
+                    scale=0.25,
+                    noise=0.0,
+                ),
+                "projected_gravity": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:projected_gravity",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "command_lin_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:command_lin_vel",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "command_ang_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:command_ang_vel",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "dof_pos": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:dof_pos",
+                    scale=1.0,
+                    noise=0.01,
+                ),
+                "dof_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:dof_vel",
+                    scale=0.05,
+                    noise=0.1,
+                ),
+                "actions": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:actions",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+            },
+        ),
+        "critic_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=False,
+            history_length=1,
+            terms={
+                "base_lin_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:base_lin_vel",
+                    scale=2.0,
+                    noise=0.0,
+                ),
+                "base_ang_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:base_ang_vel",
+                    scale=0.25,
+                    noise=0.0,
+                ),
+                "projected_gravity": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:projected_gravity",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "command_lin_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:command_lin_vel",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "command_ang_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:command_ang_vel",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "dof_pos": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:dof_pos",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+                "dof_vel": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:dof_vel",
+                    scale=0.05,
+                    noise=0.0,
+                ),
+                "actions": ObsTermCfg(
+                    func="holosoma.managers.observation.terms.locomotion:actions",
+                    scale=1.0,
+                    noise=0.0,
+                ),
+            },
+        ),
+    }
+)
+
+__all__ = ["g1_29dof_loco_single_wolinvel", "g1_29dof_loco_single_flashsac"]

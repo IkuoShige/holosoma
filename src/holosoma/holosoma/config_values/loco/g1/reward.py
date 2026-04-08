@@ -208,4 +208,65 @@ g1_29dof_loco_fpo = RewardManagerCfg(
     },
 )
 
-__all__ = ["g1_29dof_loco", "g1_29dof_loco_fast_sac", "g1_29dof_loco_fpo"]
+# Reward preset for FlashSAC tuned to closely mirror IsaacLab stock
+# ``Isaac-Velocity-Flat-G1-v0`` (the reference task FlashSAC's algorithm
+# hyperparameters were trained on). The differences from
+# ``g1_29dof_loco`` are deliberate ablations of holosoma-specific terms
+# that create degenerate local optima for FlashSAC's narrow
+# deterministic policy:
+#
+# * ``feet_phase`` REMOVED.   Holosoma's feet_phase is a pure foot-height
+#   match against a clock signal — it has no coupling to forward
+#   velocity, COM progression, or stance impulse. A near-deterministic
+#   policy can harvest it by stepping in place. With weight=5.0 and
+#   sigma=0.008 it dominated the per-term reward decomposition (+36 ep
+#   sum vs tracking_lin_vel +14) on prior runs.
+# * ``alive`` REMOVED.        IsaacLab stock has no alive bonus at all.
+#   Even at weight=1.0 the constant +1/step competes with tracking
+#   gradients. Removing it forces the policy to maximize tracking.
+# * ``pose`` REMOVED.         Holosoma's pose penalty has 50.0 weight
+#   per joint on the upper body, which strongly discourages any torso
+#   sway. PPO's high-entropy policy explores past it; FlashSAC's narrow
+#   deterministic policy locks the torso to default and never moves.
+# * ``penalty_feet_ori`` REMOVED.
+# * ``penalty_close_feet_xy`` REMOVED.
+# * Penalties scaled to IsaacLab stock magnitudes: ``ang_vel_xy`` from
+#   -1.0 to -0.05, ``orientation`` from -10.0 to -1.0.
+# * ``tracking_*`` weights kept at holosoma values (they're already
+#   reasonable; the issue is that other terms dominated, not that
+#   tracking was too small).
+#
+# The full per-term ablation rationale and Codex consultation that led
+# to this preset live in the commit message.
+g1_29dof_loco_flashsac = RewardManagerCfg(
+    only_positive_rewards=False,
+    terms={
+        "tracking_lin_vel": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:tracking_lin_vel",
+            weight=2.0,
+            params={"tracking_sigma": 0.25},
+        ),
+        "tracking_ang_vel": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:tracking_ang_vel",
+            weight=1.5,
+            params={"tracking_sigma": 0.25},
+        ),
+        "penalty_ang_vel_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_ang_vel_xy",
+            weight=-0.05,
+            params={},
+        ),
+        "penalty_orientation": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_orientation",
+            weight=-1.0,
+            params={},
+        ),
+        "penalty_action_rate": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
+            weight=-0.005,
+            params={},
+        ),
+    },
+)
+
+__all__ = ["g1_29dof_loco", "g1_29dof_loco_fast_sac", "g1_29dof_loco_fpo", "g1_29dof_loco_flashsac"]

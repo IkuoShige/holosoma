@@ -73,24 +73,23 @@ g1_29dof_flash_sac = ExperimentConfig(
     simulator=simulator.isaacsim,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    observation=observation.g1_29dof_loco_single_wolinvel,
+    # Use the FlashSAC-tuned observation (no sin/cos phase clock) and
+    # reward (no feet_phase / alive / pose / feet_ori / close_feet_xy)
+    # presets. These mirror IsaacLab stock ``Isaac-Velocity-Flat-G1-v0``,
+    # which is the reference task FlashSAC's hyperparameters were trained
+    # on. Earlier attempts using holosoma's PPO/FastSAC reward shape all
+    # collapsed FlashSAC's narrow deterministic policy into a degenerate
+    # "step in place to match clock" attractor created by feet_phase, OR
+    # "stand still and collect alive". See the inline comments on
+    # ``g1_29dof_loco_flashsac`` and ``g1_29dof_loco_single_flashsac`` for
+    # the per-term rationale.
+    observation=observation.g1_29dof_loco_single_flashsac,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
-    # NOTE: Use the PPO-default reward (alive=1.0), NOT the FastSAC preset
-    # (alive=10.0). FastSAC tolerates a large alive bonus because its policy
-    # retains high action_std / explores throughout training; FlashSAC's
-    # entropy collapses rapidly to the heuristic target (~-14 for 29 dof),
-    # so if the alive reward dominates, the first local optimum the
-    # near-deterministic policy finds is "stand upright and collect +10
-    # per step forever", which beats any walking reward the tracking terms
-    # can provide (tracking caps at ~+3.5). With alive=1.0 the walking
-    # tracking rewards are the dominant positive signal, matching the
-    # reward shape FlashSAC's upstream hyperparameters were tuned against
-    # on IsaacLab stock (which has no alive bonus at all).
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    reward=reward.g1_29dof_loco,
+    reward=reward.g1_29dof_loco_flashsac,
 )
 
 g1_29dof_flash_sac_mjwarp = ExperimentConfig(
@@ -109,18 +108,17 @@ g1_29dof_flash_sac_mjwarp = ExperimentConfig(
     simulator=simulator.mjwarp,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    observation=observation.g1_29dof_loco_single_wolinvel,
+    observation=observation.g1_29dof_loco_single_flashsac,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    # See the matching comment on ``g1_29dof_flash_sac`` for why this
-    # variant uses the PPO-default reward (alive=1.0) instead of the
-    # FastSAC preset (alive=10.0). FlashSAC's narrow deterministic policy
-    # cannot escape the "stand still" local optimum the large alive bonus
-    # creates.
-    reward=reward.g1_29dof_loco,
+    # Mirror ``g1_29dof_flash_sac``: use the FlashSAC-tuned reward preset
+    # that strips out feet_phase / alive / pose / feet_ori / close_feet_xy
+    # so the narrow deterministic policy cannot exploit any of those
+    # local optima. See ``g1_29dof_loco_flashsac`` for the rationale.
+    reward=reward.g1_29dof_loco_flashsac,
 )
 
 g1_29dof_fpo = ExperimentConfig(
