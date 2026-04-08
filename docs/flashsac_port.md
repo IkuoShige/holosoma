@@ -238,18 +238,30 @@ Removed entirely: `feet_phase`, `alive`, `pose`, `penalty_feet_ori`,
 
 Six training attempts on G1 walking, each diagnosing one layer:
 
-| # | Run dir suffix | Fix applied | Result | Root cause unblocked |
+| # | Run dir suffix | Fix applied | Empirical result | Root cause unblocked |
 |---|---|---|---|---|
 | 1 | `20260407_170834` | (initial port) | Stands still, dist 0.20 m / 10 s | Action range `±0.25 rad` was 8-11% of hip joint range |
 | 2 | `20260408_065029` | re-train with no changes (was actually re-running attempt 1's recipe) | Same as #1 | – |
 | 3 | `20260408_083642` | per-joint scaling 13× (FastSAC-style) | Robot thrashes, root z=0.24, reward -8.9 | Per-joint scaling too aggressive for FlashSAC's narrow policy |
 | 4 | `20260408_094513` | uniform scaling 2× (= IsaacLab stock 0.5 rad) | Robot upright, dist 0.27 m / 10 s | Action range fixed; reward shape still wrong |
-| 5 | `20260408_124759` | switched reward `_fast_sac` (alive=10) → `g1_29dof_loco` (alive=1) | Robot upright, dist 0.049 m / 500 steps; **`feet_phase` ep_sum +36 dominated** | alive bonus reduced; feet_phase exploit revealed |
-| 6 | `20260408_142832` | dedicated `g1_29dof_loco_flashsac` reward + `g1_29dof_loco_single_flashsac` obs (this preset) | **Walking** (not pretty, but walking) | Reward shape stripped to IsaacLab-stock minimum |
+| 5 | `20260408_124759` | switched reward `_fast_sac` (alive=10) → `g1_29dof_loco` (alive=1) | **dist 0.049 m / 500 steps** (≈ 0.005 m/s). `feet_phase` ep_sum +36 dominated the per-term decomposition; the policy learned to match the foot-phase clock *in place*. | alive bonus reduced; feet_phase exploit revealed |
+| 6 | `20260408_142832` | dedicated `g1_29dof_loco_flashsac` reward + `g1_29dof_loco_single_flashsac` obs (this preset) | **Walks. dist 2.85 m / 10 s, avg speed 0.28 m/s**, stays upright, tracks commanded velocity + yaw through curving world-frame trajectories. Not benchmark-clean but unambiguously walking. | Reward shape stripped to IsaacLab-stock minimum |
+| 7 | `20260408_154733` | reproducibility re-run of #6 with a different training seed | **Walks. dist 2.80 m / 10 s, avg speed 0.28 m/s**. Final TB metrics (critic_loss 2.10, actor_loss -2.71, entropy -13.81) match #6 within ±0.02 — the convergence basin is stable across seeds. | – |
 
 Codex was consulted at attempt #5 → #6 transition and converged on the same
 diagnosis (degenerate `feet_phase` attractor + restrictive pose penalty +
 narrow FlashSAC policy = "step in place and torso-locked" local optimum).
+
+> **Historical note**: an earlier version of this doc reported that
+> attempt #6 "does not really walk (dist 0.049 m / 10 s)" based on a probe
+> whose output was mis-attributed to the wrong run directory. A careful
+> re-probe of both checkpoints (commit `<this commit>`) confirmed that #5
+> (alive=1 with feet_phase still present) is the "twitch in place" run
+> and #6 (stripped reward) is the walking run. Walking was achieved by
+> the reward-shape ablation alone; the subsequent open-work item
+> `temp_target_sigma=0.30` is still pending verification and may further
+> improve gait quality but is not required to get the policy off the
+> ground.
 
 ## Running on MuJoCo Warp (mjwarp)
 
@@ -488,7 +500,13 @@ This means **adding FlashSAC support to a new robot or task in holosoma is not a
 
 ### 2. Walking quality is "it walks" not "benchmark-clean"
 
-The latest training run (`20260408_142832`) produces a policy that visibly walks but the gait is "綺麗ではない" (not pretty). FlashSAC's paper benchmarks on `Isaac-Velocity-Flat-G1-v0` show much higher fidelity. The gap is most likely due to:
+The latest training run (`20260408_142832` / reproduced by `20260408_154733`)
+produces a policy that empirically walks at avg 0.28 m/s over 10 sim seconds,
+stays upright, and tracks commanded yaw through curving trajectories. The
+gait is visibly not polished (the user's assessment was 「綺麗ではないが歩いて
+はいた」 — "it's walking but not pretty"). FlashSAC's paper benchmarks on
+`Isaac-Velocity-Flat-G1-v0` show much higher fidelity. The gap is most likely
+due to:
 
 - holosoma's reward shape, even after stripping, differs from IsaacLab stock in
   small ways (tracking sigma, term names, command sampling distribution,
