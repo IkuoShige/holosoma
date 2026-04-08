@@ -291,6 +291,15 @@ class FPOAgent(PPO):
                 actions = self.actor.act({"actor_obs": actor_obs})
                 values = self.critic.evaluate({"critic_obs": critic_obs}).detach()
 
+                # FPO++ critical: clip actions BEFORE storing/CFM-loss training,
+                # matching official FpoRslRlVecEnvWrapper.clip_actions behavior.
+                # Without this, the actor learns an unbounded distribution while
+                # the env actually applies clipped actions, causing flow field
+                # divergence and CFM loss explosion.
+                if self.env.robot_config.control.clip_actions:
+                    clip_value = self.env.robot_config.control.action_clip_value
+                    actions = torch.clamp(actions, -clip_value, clip_value)
+
                 # Storage action noise (FPO++ implicit entropy regularization)
                 stored_actions = actions
                 if self.config.storage_action_noise_std > 0:
