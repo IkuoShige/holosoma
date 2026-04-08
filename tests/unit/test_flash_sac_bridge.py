@@ -148,6 +148,41 @@ def test_bridge_actor_only_when_no_critic_group() -> None:
     assert infos["asymmetric_obs"] is False
 
 
+def test_g1_flash_sac_experiments_use_widened_target_entropy() -> None:
+    """Regression: ``g1_29dof_flash_sac`` and ``g1_29dof_flash_sac_mjwarp``
+    override ``temp_target_sigma`` from upstream 0.15 to 0.30.
+
+    FlashSAC's upstream default is tuned against IsaacLab stock G1 where
+    the reward landscape has a clean walking gradient; holosoma's reward
+    zoo is subtly messier and FlashSAC's narrow near-deterministic policy
+    (target_entropy ≈ -13.87 at sigma=0.15) exploits reward-shaping local
+    optima. Widening sigma to 0.30 doubles per-dim sample noise and
+    moves target_entropy to ≈ +6.23, keeping the policy exploratory for
+    longer. See docs/flashsac_port.md "Open work #1" for rationale.
+
+    This test guards against accidental regressions in
+    ``config_values/loco/g1/experiment.py``. The base ``algo.flash_sac``
+    default is deliberately left at 0.15 to preserve upstream fidelity
+    for anyone running Gate A against IsaacLab stock.
+    """
+    from holosoma.config_values.algo import flash_sac
+    from holosoma.config_values.experiment import DEFAULTS
+
+    # Upstream default untouched.
+    assert flash_sac.config.temp_target_sigma == 0.15, (
+        "algo.flash_sac base default should stay at upstream 0.15; only the "
+        "holosoma G1 experiments override it."
+    )
+
+    # Both holosoma G1 FlashSAC experiments override to 0.30.
+    for key in ("g1_29dof_flash_sac", "g1_29dof_flash_sac_mjwarp"):
+        cfg = DEFAULTS[key].algo.config
+        assert cfg.temp_target_sigma == 0.30, (
+            f"{key} should override temp_target_sigma to 0.30 (got "
+            f"{cfg.temp_target_sigma}); see docs/flashsac_port.md Open work #1."
+        )
+
+
 def test_bridge_uniform_action_scaling_matches_isaaclab_stock() -> None:
     """Regression: bridge applies uniform action scaling matching IsaacLab
     stock ``Isaac-Velocity-Flat-G1-v0`` (``JointPositionActionCfg(scale=0.5)``).

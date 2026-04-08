@@ -545,10 +545,16 @@ hyperparameter tuning, these are the next things to inspect.
 
 Suggested order, in increasing scope:
 
-1. **Re-run with `temp_target_sigma=0.30` (was 0.15)** against the current
-   `g1_29dof_loco_flashsac` preset. The narrow target entropy is the main
-   reason FlashSAC exploits any reward-shaping local optimum so aggressively.
-   Widening it should improve walking quality on the same preset. ~45 min.
+1. ~~**Re-run with `temp_target_sigma=0.30` (was 0.15)** against the current
+   `g1_29dof_loco_flashsac` preset.~~ ✅ **DONE as a config change.** Both
+   `g1_29dof_flash_sac` and `g1_29dof_flash_sac_mjwarp` now override
+   `temp_target_sigma` to 0.30 in `config_values/loco/g1/experiment.py`;
+   the base `algo.flash_sac` default remains 0.15 for upstream-fidelity
+   Gate A runs. Target entropy moves from ≈ -13.87 (per-dim std 0.15) to
+   ≈ +6.23 (per-dim std 0.30, doubled per-action sample noise). The
+   empirical walking-quality check is still pending: run the recipe
+   below and verify the policy no longer saturates at the first local
+   optimum it finds.
 2. **Try widening to `temp_target_sigma=0.30` *and* swap reward back to
    `g1_29dof_loco` (PPO default with alive=1.0)**. If this trains to walking,
    the dedicated FlashSAC reward preset becomes optional rather than required

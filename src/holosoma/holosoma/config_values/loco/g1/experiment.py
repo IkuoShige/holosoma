@@ -64,6 +64,20 @@ g1_29dof_flash_sac = ExperimentConfig(
         config=replace(
             algo.flash_sac.config,
             num_learning_iterations=50000,
+            # Widen the target-entropy heuristic from upstream's 0.15
+            # to 0.30. FlashSAC's target_entropy = 0.5 * action_dim *
+            # log(2*pi*e*sigma^2); for 29-D G1 actions this moves the
+            # target from ≈ -13.87 (very narrow, per-dim std 0.15)
+            # to ≈ +6.23 (per-dim std 0.30, doubled sample noise).
+            # Upstream 0.15 is tuned against IsaacLab stock G1 where
+            # the reward landscape has a clean gradient toward walking;
+            # holosoma's reward is subtly messier and FlashSAC's narrow
+            # near-deterministic policy gets stuck in reward-shaping
+            # local optima. Wider target entropy keeps the policy
+            # exploring for longer. See docs/flashsac_port.md "Open work
+            # #1" for the rationale and commit log for the diagnostic
+            # history (esp. 20260408_124759 → 20260408_142832 runs).
+            temp_target_sigma=0.30,
         ),
     ),
     # FlashSAC port targets the IsaacSim backend (Gate B). The vendored
@@ -100,6 +114,10 @@ g1_29dof_flash_sac_mjwarp = ExperimentConfig(
         config=replace(
             algo.flash_sac.config,
             num_learning_iterations=50000,
+            # Mirror ``g1_29dof_flash_sac``: widen target-entropy sigma
+            # from 0.15 to 0.30 so FlashSAC's policy stays more
+            # exploratory on holosoma's reward landscape.
+            temp_target_sigma=0.30,
         ),
     ),
     # Same FlashSAC algorithm + same manager-based env, but driven by the
