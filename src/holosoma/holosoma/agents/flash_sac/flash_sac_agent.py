@@ -166,7 +166,17 @@ class FlashSACAgent(BaseAlgo):
         observations, env_infos = env.reset()
         actions: np.ndarray | None = None
         transition: dict[str, Any] | None = None
-        update_info: dict[str, Any] = {}
+        # ``agent.update()`` returns different key sets depending on
+        # ``_update_step % actor_update_period``: even steps carry
+        # actor/temperature/critic keys, odd steps carry only critic keys.
+        # Overwriting a single dict per update therefore loses actor metrics
+        # when the last update of a logging window happens to be an odd
+        # step. With the stock ``updates_per_interaction_step=2.0`` and
+        # ``logging_interval=100``, the last update of every window is odd,
+        # so actor/entropy/temperature metrics would NEVER land in
+        # TensorBoard. Accumulate into a running dict instead and reset it
+        # once we flush to the writer.
+        window_update_info: dict[str, Any] = {}
         update_counter: float = 0.0
 
         pbar = tqdm.tqdm(
@@ -214,17 +224,21 @@ class FlashSACAgent(BaseAlgo):
             if agent.can_start_training():
                 update_counter += cfg.updates_per_interaction_step
                 while update_counter >= 1:
-                    update_info = agent.update()
+                    step_update_info = agent.update()
+                    window_update_info.update(step_update_info)
                     update_counter -= 1
 
                 if cfg.logging_interval and interaction_step % cfg.logging_interval == 0:
-                    self._log_metrics(update_info, env_step)
+                    self._log_metrics(window_update_info, env_step)
+                    window_update_info = {}
 
                 if cfg.save_interval and interaction_step % cfg.save_interval == 0:
                     self._save_checkpoint(interaction_step)
 
         # Final flush + checkpoint.
-        self._log_metrics(update_info, env_step=int(cfg.num_learning_iterations) * env.num_envs)
+        self._log_metrics(
+            window_update_info, env_step=int(cfg.num_learning_iterations) * env.num_envs
+        )
         self._save_checkpoint(int(cfg.num_learning_iterations))
         self.writer.flush()
         self.writer.close()
