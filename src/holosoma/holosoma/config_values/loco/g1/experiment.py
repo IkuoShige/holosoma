@@ -78,8 +78,19 @@ g1_29dof_flash_sac = ExperimentConfig(
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
+    # NOTE: Use the PPO-default reward (alive=1.0), NOT the FastSAC preset
+    # (alive=10.0). FastSAC tolerates a large alive bonus because its policy
+    # retains high action_std / explores throughout training; FlashSAC's
+    # entropy collapses rapidly to the heuristic target (~-14 for 29 dof),
+    # so if the alive reward dominates, the first local optimum the
+    # near-deterministic policy finds is "stand upright and collect +10
+    # per step forever", which beats any walking reward the tracking terms
+    # can provide (tracking caps at ~+3.5). With alive=1.0 the walking
+    # tracking rewards are the dominant positive signal, matching the
+    # reward shape FlashSAC's upstream hyperparameters were tuned against
+    # on IsaacLab stock (which has no alive bonus at all).
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    reward=reward.g1_29dof_loco_fast_sac,
+    reward=reward.g1_29dof_loco,
 )
 
 g1_29dof_flash_sac_mjwarp = ExperimentConfig(
@@ -104,7 +115,12 @@ g1_29dof_flash_sac_mjwarp = ExperimentConfig(
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    reward=reward.g1_29dof_loco_fast_sac,
+    # See the matching comment on ``g1_29dof_flash_sac`` for why this
+    # variant uses the PPO-default reward (alive=1.0) instead of the
+    # FastSAC preset (alive=10.0). FlashSAC's narrow deterministic policy
+    # cannot escape the "stand still" local optimum the large alive bonus
+    # creates.
+    reward=reward.g1_29dof_loco,
 )
 
 g1_29dof_fpo = ExperimentConfig(
