@@ -21,8 +21,29 @@ import torch
 
 
 @dataclass
+class _MockInitState:
+    default_joint_angles: dict
+
+
+@dataclass
+class _MockControl:
+    action_scale: float = 0.25
+
+
+@dataclass
 class _MockRobotCfg:
     actions_dim: int = 3
+    dof_names: tuple = ("j0", "j1", "j2")
+    dof_pos_lower_limit_list: tuple = (-1.0, -1.0, -1.0)
+    dof_pos_upper_limit_list: tuple = (1.0, 1.0, 1.0)
+    init_state: _MockInitState = None
+    control: _MockControl = None
+
+    def __post_init__(self):
+        if self.init_state is None:
+            self.init_state = _MockInitState(default_joint_angles={"j0": 0.0, "j1": 0.0, "j2": 0.0})
+        if self.control is None:
+            self.control = _MockControl(action_scale=0.25)
 
 
 class _MockBaseTask:
@@ -125,6 +146,65 @@ def test_bridge_actor_only_when_no_critic_group() -> None:
     obs, infos = bridge.reset(random_start_init=False)
     assert obs.shape == (2, 4)  # actor only
     assert infos["asymmetric_obs"] is False
+
+
+def test_bridge_per_joint_action_scaling_matches_fast_sac() -> None:
+    """Regression: bridge must apply the same per-joint scaling FastSAC uses.
+
+    Without this scaling, FlashSAC's ``tanh ∈ [-1, 1]`` output times the env's
+    uniform ``action_scale=0.25`` gives a per-joint target range of only
+    ±0.25 rad — ~8-11% of G1's hip/knee joint range, which is too narrow to
+    produce a walking gait. FastSAC sidesteps this with
+    ``action_scaling_factors = max_range / env_action_scale``; the bridge must
+    do the same so the policy's bounded output can command the full joint
+    range after the env's internal scaling.
+    """
+    from holosoma.agents.flash_sac.flash_sac_env_bridge import FlashSACGymBridge
+
+    env = _MockBaseTask(num_envs=2, actor_dim=4, critic_dim=4)
+    # Build a realistic-ish per-joint mock: asymmetric hip-like joint
+    env.robot_config.dof_names = ("hip_pitch", "hip_roll", "knee")
+    env.robot_config.dof_pos_lower_limit_list = (-2.5, -0.5, -0.1)
+    env.robot_config.dof_pos_upper_limit_list = (2.9, 3.0, 2.9)
+    env.robot_config.init_state.default_joint_angles = {
+        "hip_pitch": -0.3,
+        "hip_roll": 0.0,
+        "knee": 0.7,
+    }
+    env.robot_config.control.action_scale = 0.25
+
+    bridge = FlashSACGymBridge(env, actor_obs_keys=("actor_obs",), critic_obs_keys=("critic_obs",))
+    assert bridge._action_scaling_factors is not None
+
+    # Expected: max(|lower - default|, |upper - default|) / action_scale
+    #   hip_pitch: max(|-2.5 - (-0.3)|, |2.9 - (-0.3)|) / 0.25 = max(2.2, 3.2) / 0.25 = 12.8
+    #   hip_roll:  max(|-0.5 - 0|, |3.0 - 0|) / 0.25            = 3.0 / 0.25         = 12.0
+    #   knee:      max(|-0.1 - 0.7|, |2.9 - 0.7|) / 0.25         = max(0.8, 2.2)/0.25 = 8.8
+    scales = bridge._action_scaling_factors.cpu().numpy()
+    np.testing.assert_allclose(scales, [12.8, 12.0, 8.8], rtol=1e-4)
+
+    # And step() should apply the scaling: actor output +1 should reach
+    # full positive joint range after env action_scale (0.25 * 12.8 = 3.2,
+    # matching the upper limit minus default for hip_pitch).
+    bridge.reset(random_start_init=False)
+
+    class _Capture:
+        actions = None
+
+        def step(self, actor_state):
+            type(self).actions = actor_state["actions"]
+            return env.obs_buf_dict, env.rew_buf, env.reset_buf, env.extras
+
+    capture = _Capture()
+    env_real_step = env.step
+    env.step = capture.step  # type: ignore[assignment]
+    bridge.step(np.array([[1.0, 1.0, 1.0], [-1.0, -1.0, -1.0]], dtype=np.float32))
+    env.step = env_real_step  # type: ignore[assignment]
+
+    # Scaled actions = ±1 * scales
+    assert capture.actions is not None
+    np.testing.assert_allclose(capture.actions[0].cpu().numpy(), [12.8, 12.0, 8.8], rtol=1e-4)
+    np.testing.assert_allclose(capture.actions[1].cpu().numpy(), [-12.8, -12.0, -8.8], rtol=1e-4)
 
 
 def test_bridge_handles_dict_action_contract() -> None:
