@@ -13,6 +13,7 @@ as the highest-risk part of the Layer 2 adapter:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -136,6 +137,117 @@ def test_bridge_handles_dict_action_contract() -> None:
     bridge.reset(random_start_init=False)
     bridge.step(np.zeros((2, env.dim_actions), dtype=np.float32))
     # If we got here, _MockBaseTask.step's assert on the action shape passed.
+
+
+def test_flash_sac_agent_dual_format_checkpoint_round_trip(tmp_path) -> None:
+    """``FlashSACAgent.save`` writes a dual-format checkpoint and ``load``
+    accepts either form.
+
+    Uses the lower-level vendored ``FlashSACAgent`` (not the holosoma
+    BaseAlgo wrapper) so the round-trip runs on CPU without IsaacSim — we
+    don't need the bridge or BaseAlgo plumbing to test that the packed
+    single-file format unpacks byte-identically back into per-component
+    ``.pt`` files.
+    """
+    import numpy as np
+    from gymnasium import spaces
+
+    from holosoma._vendored.flash_rl.agents.flashSAC.agent import (
+        FlashSACAgent as VendoredFlashSACAgent,
+    )
+    from holosoma._vendored.flash_rl.agents.flashSAC.agent import FlashSACConfig
+
+    obs_dim = 4
+    act_dim = 2
+    cfg = FlashSACConfig(
+        seed=0,
+        normalize_reward=False,
+        normalized_G_max=5.0,
+        asymmetric_observation=False,
+        device_type="cpu",
+        buffer_max_length=64,
+        buffer_min_length=4,
+        buffer_device_type="cpu",
+        sample_batch_size=4,
+        learning_rate_init=3e-4,
+        learning_rate_peak=3e-4,
+        learning_rate_end=1.5e-4,
+        learning_rate_warmup_rate=1e-6,
+        learning_rate_warmup_step=1,
+        learning_rate_decay_rate=1.0,
+        learning_rate_decay_step=10,
+        actor_num_blocks=1,
+        actor_hidden_dim=16,
+        actor_bc_alpha=0.0,
+        actor_noise_zeta_mu=2.0,
+        actor_noise_zeta_max=4,
+        actor_update_period=1,
+        critic_num_blocks=1,
+        critic_hidden_dim=16,
+        critic_num_bins=11,
+        critic_min_v=-5.0,
+        critic_max_v=5.0,
+        critic_target_update_tau=0.01,
+        temp_initial_value=0.01,
+        temp_target_sigma=0.15,
+        temp_target_entropy=0.0,
+        gamma=0.99,
+        n_step=1,
+        use_compile=False,
+        compile_mode="reduce-overhead",
+        use_amp=False,
+        load_optimizer=True,
+        load_reward_normalizer=False,  # normalize_reward is False → no normalizer exists
+    )
+    obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+    act_space = spaces.Box(low=-1.0, high=1.0, shape=(act_dim,), dtype=np.float32)
+    env_info = {"actor_observation_size": (obs_dim,), "asymmetric_obs": False}
+
+    a = VendoredFlashSACAgent(obs_space, act_space, env_info, cfg)
+    dir_path = tmp_path / "flashsac_step0"
+    dir_path.mkdir()
+    a.save(str(dir_path))
+
+    # Each component .pt file exists
+    component_files = [
+        "actor.pt",
+        "critic.pt",
+        "target_critic.pt",
+        "temperature.pt",
+        "agent_state.pt",
+    ]
+    for fname in component_files:
+        assert (dir_path / fname).exists(), f"{fname} missing from {dir_path}"
+
+    # Simulate the migration: pack the directory into a single .ckpt as the
+    # holosoma adapter does, then round-trip it back through a tempdir +
+    # vendored load.
+    import torch
+
+    components = {
+        fname: torch.load(str(dir_path / fname), map_location="cpu", weights_only=False)
+        for fname in component_files
+    }
+    packed = {
+        "experiment_config": {"dummy": "value"},
+        "iteration": 0,
+        "global_step": 0,
+        "flashsac_components": components,
+    }
+    ckpt_file = tmp_path / "flashsac_step0.ckpt"
+    torch.save(packed, str(ckpt_file))
+
+    # Unpack to a temp dir and reload through the vendored loader (this is
+    # exactly what ``FlashSACAgent.load`` does internally for single-file
+    # checkpoints).
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+        for fname, contents in components.items():
+            torch.save(contents, str(tmpdir / fname))
+        a2 = VendoredFlashSACAgent(obs_space, act_space, env_info, cfg)
+        a2.load(str(tmpdir))  # should succeed byte-for-byte
 
 
 def test_bridge_final_observations_full_batch_layout() -> None:

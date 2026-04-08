@@ -23,7 +23,9 @@ Design notes
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import os
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -40,6 +42,20 @@ from holosoma.agents.base_algo.base_algo import BaseAlgo
 from holosoma.agents.flash_sac.flash_sac_env_bridge import FlashSACGymBridge
 from holosoma.config_types.algo import FlashSACVendorConfig
 from holosoma.envs.base_task.base_task import BaseTask
+
+# Keys used to pack the five vendored per-component state files into the
+# single-file ``.ckpt`` format holosoma's ``eval_agent.py`` expects. Each
+# value is the on-disk file name the vendored agent writes inside its
+# checkpoint directory; the same names are used for the inline payload
+# dict keys so round-tripping is trivially reversible.
+_FLASHSAC_COMPONENT_FILES: tuple[str, ...] = (
+    "actor.pt",
+    "critic.pt",
+    "target_critic.pt",
+    "temperature.pt",
+    "reward_normalizer.pt",
+    "agent_state.pt",
+)
 
 
 class FlashSACAgent(BaseAlgo):
@@ -117,6 +133,15 @@ class FlashSACAgent(BaseAlgo):
         # consistently with that contract.
         if vendored_kwargs.get("temp_target_entropy") is None:
             vendored_kwargs["temp_target_entropy"] = None
+
+        # Upstream ``FlashSACAgent.load`` asserts that ``reward_normalizer is
+        # not None`` whenever ``load_reward_normalizer`` is True, which fires
+        # a misleading AssertionError when someone trained with
+        # ``normalize_reward=False``. Force the two flags to agree so the
+        # adapter's load path is always consistent: if we never created a
+        # normalizer, we never try to load one.
+        if not vendored_kwargs.get("normalize_reward", True):
+            vendored_kwargs["load_reward_normalizer"] = False
 
         # Reset to obtain the env_info dict the vendored agent expects.
         _, env_info = self.bridge.reset(random_start_init=False)
@@ -205,18 +230,133 @@ class FlashSACAgent(BaseAlgo):
         self.writer.close()
 
     # ------------------------------------------------------------------
+    # Evaluation (holosoma ``eval_agent.py`` entry-point)
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def evaluate_policy(self, max_eval_steps: int | None = None) -> None:
+        """Roll out the deterministic inference policy through the bridge.
+
+        Mirrors ``FastSACAgent.evaluate_policy`` in shape so that holosoma's
+        ``eval_agent.py`` can drive the FlashSAC adapter without any
+        algorithm-specific branching. The eval loop uses ``training=False``
+        (deterministic action, no entropy noise) and treats the bridge as a
+        numpy gymnasium VectorEnv.
+        """
+
+        if self._inner_agent is None:
+            self.setup()
+        assert self._inner_agent is not None
+
+        env = self.bridge
+        agent = self._inner_agent
+
+        observations, _ = env.reset(random_start_init=False)
+        prev_transition: dict[str, Any] = {"next_observation": observations}
+
+        iterator = itertools.count() if max_eval_steps is None else range(max_eval_steps)
+        for _ in iterator:
+            actions = agent.sample_actions(
+                interaction_step=0,
+                prev_transition=prev_transition,
+                training=False,
+            )
+            actions = np.asarray(actions)
+            next_observations, _rewards, _terminateds, _truncateds, _infos = env.step(actions)
+            prev_transition = {"next_observation": next_observations}
+            observations = next_observations
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
+    def save(self, path: str | None = None, name: str = "model.ckpt") -> None:
+        """Write both the vendored directory format and a single-file ``.ckpt``.
+
+        - The directory contains the five per-component ``.pt`` files the
+          vendored ``FlashSACAgent.load`` reads (actor, critic,
+          target_critic, temperature, reward_normalizer, agent_state).
+          This preserves byte-exact compatibility with upstream
+          ``play_isaaclab.py``.
+        - The single-file ``.ckpt`` written next to the directory packs the
+          holosoma-side ``experiment_config`` / ``wandb_run_path`` metadata
+          alongside the *contents* of those five files, so
+          ``holosoma.eval_agent`` can ingest it through its standard
+          ``load_checkpoint`` → ``algo.load`` path.
+
+        The ``path`` argument mirrors ``BaseAlgo.save``: if ``None``, use
+        ``self.log_dir``; otherwise treat ``path`` as the target directory.
+        The single-file checkpoint is written at ``<path>/<name>``.
+        """
+
+        if not self.is_main_process or self._inner_agent is None:
+            return
+
+        save_dir = str(path) if path is not None else self.log_dir
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 1) Vendored directory format (for play_isaaclab.py compatibility).
+        self._inner_agent.save(save_dir)
+
+        # 2) Single-file ``.ckpt`` (for holosoma eval_agent.py).
+        components: dict[str, Any] = {}
+        for fname in _FLASHSAC_COMPONENT_FILES:
+            fpath = os.path.join(save_dir, fname)
+            if os.path.exists(fpath):
+                components[fname] = torch.load(fpath, map_location="cpu", weights_only=False)
+
+        metadata = self._checkpoint_metadata(iteration=self.global_step)
+
+        save_dict: dict[str, Any] = {
+            **metadata,
+            "flashsac_components": components,
+            "global_step": int(self.global_step),
+        }
+
+        ckpt_path = os.path.join(save_dir, name)
+        torch.save(save_dict, ckpt_path)
+        logger.info(f"[FlashSAC] wrote single-file checkpoint at {ckpt_path}")
+
     def load(self, ckpt_path: str | None) -> None:
+        """Load weights from either a directory or a single ``.ckpt`` file.
+
+        The directory form delegates verbatim to the vendored
+        ``FlashSACAgent.load`` (reads actor.pt / critic.pt / ...).
+
+        The single-file form unpacks ``flashsac_components`` back into a
+        temporary directory, then reuses the vendored loader so the on-disk
+        format of each component file is honored without re-implementing
+        the inner ``Network.load`` logic here.
+        """
+
         if not ckpt_path:
             return
         if self._inner_agent is None:
             self.setup()
         assert self._inner_agent is not None
-        # The vendored agent's ``load`` expects a directory or file path that
-        # ``torch.save`` previously wrote. We delegate verbatim.
-        self._inner_agent.load(ckpt_path)
+
+        path = Path(ckpt_path)
+        if path.is_dir():
+            self._inner_agent.load(str(path))
+            return
+
+        payload = torch.load(str(path), map_location=self.device, weights_only=False)
+        if not isinstance(payload, dict) or "flashsac_components" not in payload:
+            raise ValueError(
+                f"Checkpoint {path} is neither a vendored FlashSAC directory nor a "
+                f"holosoma single-file FlashSAC checkpoint (missing "
+                f"'flashsac_components' key; got keys: {list(payload.keys()) if isinstance(payload, dict) else type(payload)})."
+            )
+
+        components: dict[str, Any] = payload["flashsac_components"]
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="flashsac_load_") as tmpdir:
+            for fname, contents in components.items():
+                torch.save(contents, os.path.join(tmpdir, fname))
+            self._inner_agent.load(tmpdir)
+
+        self.global_step = int(payload.get("global_step", self.global_step))
 
     def get_inference_policy(
         self, device: str | None = None
@@ -272,6 +412,9 @@ class FlashSACAgent(BaseAlgo):
         save_path = os.path.join(self.log_dir, f"flashsac_step{interaction_step}")
         os.makedirs(save_path, exist_ok=True)
         try:
-            self._inner_agent.save(save_path)
+            # Delegates to ``FlashSACAgent.save`` which writes both the
+            # vendored directory format and the holosoma-side single-file
+            # ``.ckpt`` that ``eval_agent.py`` can ingest.
+            self.save(save_path, name=f"flashsac_step{interaction_step}.ckpt")
         except Exception as exc:  # pragma: no cover - persistence is best-effort during smoke
             logger.warning(f"FlashSACAgent checkpoint save failed: {exc}")
