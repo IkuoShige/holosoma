@@ -51,7 +51,7 @@ class FlashSACGymBridge(VectorEnv):
         critic_obs_keys: Sequence[str] = ("critic_obs",),
         action_bounds: float = 1.0,
         to_numpy: bool = True,
-        apply_per_joint_action_scaling: bool = True,
+        target_action_scale_rad: float | None = 0.5,
     ):
         self._env = env
         self._actor_obs_keys = list(actor_obs_keys)
@@ -103,54 +103,41 @@ class FlashSACGymBridge(VectorEnv):
         )
         self.action_space = batch_space(self.single_action_space, self.num_envs)
 
-        # FlashSAC's actor outputs ``tanh(mean) ∈ [-1, 1]`` with no per-joint
-        # scaling, unlike holosoma's FastSAC which multiplies by per-joint
-        # ``action_scaling_factors`` before the env applies its uniform
-        # ``action_scale``. Without per-joint scaling, FlashSAC's effective
-        # joint target range is ``±action_scale`` radians (e.g. ±0.25 rad with
-        # holosoma's default), which covers only ~8-11% of the hip/knee joint
-        # range for G1 — too narrow to produce a walking gait. Precompute the
-        # same scaling factors FastSAC uses (``max_range / env_action_scale``)
-        # and apply them to the actor's clamped output before handing it to
-        # the env. The env then multiplies by ``action_scale`` internally, so
-        # the final joint target covers the full per-joint range.
+        # FlashSAC's actor outputs ``tanh(mean) ∈ [-1, 1]``. Holosoma's
+        # ``JointPositionActionTerm`` then multiplies by
+        # ``robot.control.action_scale`` (0.25 for G1) to produce the joint
+        # position target offset from default. Without compensation, this
+        # gives the actor only ``±0.25 rad`` of per-joint authority — too
+        # narrow to walk (hip swing in a walking gait is 30-40°, ~0.5-0.7 rad).
         #
-        # This MUST be active during both training and eval because the
-        # policy learns against this scaling. Toggling it off between
-        # train/eval would change the effective action distribution the
-        # policy sees and break inference.
-        self._action_scaling_factors: torch.Tensor | None = None
-        if apply_per_joint_action_scaling:
-            self._action_scaling_factors = self._compute_per_joint_action_scaling(env)
-
-    def _compute_per_joint_action_scaling(self, env: BaseTask) -> torch.Tensor:
-        """Mirror of ``FastSACEnv._compute_action_boundaries``.
-
-        Returns a 1D tensor of shape ``(num_dof,)`` where each entry is
-        ``max(|lower - default|, |upper - default|) / env_action_scale``.
-        Multiplying a ``tanh ∈ [-1, 1]`` actor output by this tensor lets the
-        env's internal ``action_scale`` multiplication recover the full
-        per-joint range.
-        """
-        robot_config = env.robot_config
-        dof_lower = torch.tensor(
-            robot_config.dof_pos_lower_limit_list, device=self.device, dtype=torch.float32
-        )
-        dof_upper = torch.tensor(
-            robot_config.dof_pos_upper_limit_list, device=self.device, dtype=torch.float32
-        )
-        default_joint_angles = torch.zeros(
-            len(robot_config.dof_names), device=self.device, dtype=torch.float32
-        )
-        init_defaults = robot_config.init_state.default_joint_angles
-        for i, joint_name in enumerate(robot_config.dof_names):
-            if joint_name in init_defaults:
-                default_joint_angles[i] = init_defaults[joint_name]
-        env_action_scale = float(robot_config.control.action_scale)
-        range_to_lower = torch.abs(dof_lower - default_joint_angles)
-        range_to_upper = torch.abs(dof_upper - default_joint_angles)
-        max_range = torch.maximum(range_to_lower, range_to_upper)
-        return max_range / env_action_scale
+        # FlashSAC's upstream training uses IsaacLab's stock
+        # ``Isaac-Velocity-Flat-G1-v0`` task which sets
+        # ``JointPositionActionCfg(scale=0.5)`` uniformly across all joints,
+        # giving ``±0.5 rad ≈ ±29°`` of authority. That is the effective
+        # joint-level action scale FlashSAC's algorithm hyperparameters
+        # (actor_noise_zeta, temp_target_sigma, etc.) are tuned against.
+        #
+        # Match that by multiplying the actor's clamped output by
+        # ``target_action_scale_rad / env.robot_config.control.action_scale``
+        # — a UNIFORM factor, not per-joint. FastSAC's per-joint
+        # ``max_range / action_scale`` is a different design decision: it
+        # hands the actor full authority to reach joint limits, but that
+        # interacts badly with FlashSAC's fast entropy collapse (narrow
+        # deterministic policy landing in extreme joint configurations →
+        # robot falls → training diverges).
+        #
+        # Passing ``target_action_scale_rad=None`` disables the scaling
+        # entirely, matching the bare bridge behavior used for IsaacLab
+        # stock tasks which already scale internally.
+        self._action_scale_multiplier: float | None = None
+        if target_action_scale_rad is not None:
+            env_action_scale = float(env.robot_config.control.action_scale)
+            if env_action_scale <= 0:
+                raise ValueError(
+                    f"robot.control.action_scale must be positive, got {env_action_scale}"
+                )
+            self._action_scale_multiplier = float(target_action_scale_rad) / env_action_scale
+            self._target_action_scale_rad = float(target_action_scale_rad)
 
     # ------------------------------------------------------------------
     # gymnasium vector env API
@@ -195,12 +182,14 @@ class FlashSACGymBridge(VectorEnv):
             torch_actions = torch.as_tensor(actions, device=self.device)
 
         torch_actions = torch.clamp(torch_actions, -1.0, 1.0) * self._action_bounds
-        # Per-joint action scaling so the actor's ``tanh ∈ [-1, 1]`` output
-        # covers the full joint range after the env's internal
-        # ``action_scale`` multiplication. See the init-time comment for
-        # rationale. MUST be applied uniformly in training and eval.
-        if self._action_scaling_factors is not None:
-            torch_actions = torch_actions * self._action_scaling_factors
+        # Uniform action scaling so the actor's ``tanh ∈ [-1, 1]`` output
+        # produces the same effective joint target range (±0.5 rad by
+        # default) that FlashSAC's upstream algorithm hyperparameters were
+        # tuned against on IsaacLab's stock G1 task. MUST be applied
+        # identically in training and eval — this is part of the env
+        # transition the policy learns against.
+        if self._action_scale_multiplier is not None:
+            torch_actions = torch_actions * self._action_scale_multiplier
 
         obs_buf_dict, rew_buf, reset_buf, extras = self._env.step({"actions": torch_actions})
 
