@@ -59,14 +59,10 @@ g1_29dof_fast_sac = ExperimentConfig(
 g1_29dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_manager"),
-    # Use the upstream FlashSAC algo defaults verbatim: temp_target_sigma=0.15,
+    # Upstream FlashSAC algo defaults verbatim: temp_target_sigma=0.15,
     # asymmetric_observation=False, n_step=3, updates_per_interaction_step=2,
     # use_amp=True, etc. — matching configs/agent/flashSAC.yaml and
-    # scripts/run_isaaclab.sh in /workspace/FlashSAC. The preceding
-    # ``temp_target_sigma=0.30`` override (20260408_181344) did not improve
-    # gait quality (bent-posture attractor persisted) so we revert to the
-    # paper default. See docs/flashsac_port.md "Open work #2" for the
-    # rationale.
+    # scripts/run_isaaclab.sh in /workspace/FlashSAC.
     algo=algo.flash_sac,
     # FlashSAC port targets the IsaacSim backend (Gate B). The vendored
     # algorithm itself is simulator-agnostic; only the underlying physics
@@ -75,31 +71,34 @@ g1_29dof_flash_sac = ExperimentConfig(
     simulator=simulator.isaacsim,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    # Option A recipe (docs/flashsac_port.md "Open work #2"): pair FlashSAC
-    # with holosoma's PPO-default reward+observation (same pair used by
-    # g1_29dof_loco / g1_29dof_fpo / g1_29dof_fast_sac). This tests whether
-    # the dedicated stripped "flashsac" preset is actually required — if
-    # FlashSAC converges here, the port becomes much more usable across
-    # holosoma's reward zoo. If it collapses (the "twitch in place" /
-    # "stand still and collect alive" attractors previously observed at
-    # 20260407_170834 … 20260408_065029), fall back to
-    # ``g1_29dof_loco_flashsac`` + ``g1_29dof_loco_single_flashsac``
-    # which are still registered and known to walk (20260408_142832 /
-    # 20260408_154733 baseline, ~0.28 m/s forward).
-    observation=observation.g1_29dof_loco_single_wolinvel,
+    # Dedicated FlashSAC-compatible reward and observation presets
+    # (g1_29dof_loco_flashsac / g1_29dof_loco_single_flashsac). These strip
+    # the exploration-killing terms {feet_phase, alive, pose, penalty_feet_ori,
+    # penalty_close_feet_xy} and the sin/cos phase clock, leaving only the
+    # task-defining tracking_lin_vel / tracking_ang_vel plus minimal
+    # stability penalties. Mirrors IsaacLab stock ``Isaac-Velocity-Flat-G1-v0``
+    # (the reference task FlashSAC's hyperparameters were tuned against).
+    #
+    # Option A (Open work #3, commit d422082) tested pairing FlashSAC with
+    # the full holosoma PPO-default ``g1_29dof_loco`` reward on 20260409_053822
+    # and confirmed empirically that the stripped preset is required: actor
+    # collapsed to mean_action ≈ 0, fell at deploy. The earlier negative
+    # result at 20260408_124759 (also on g1_29dof_loco) was NOT masking the
+    # action-scale bug after all. Reverted to the stripped preset.
+    # See docs/flashsac_port.md "Open work #3" for the post-mortem.
+    observation=observation.g1_29dof_loco_single_flashsac,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    reward=reward.g1_29dof_loco,
+    reward=reward.g1_29dof_loco_flashsac,
 )
 
 g1_29dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_mjwarp_manager"),
-    # Mirror ``g1_29dof_flash_sac``: use upstream FlashSAC algo defaults
-    # verbatim, including ``temp_target_sigma=0.15``.
+    # Mirror ``g1_29dof_flash_sac``: upstream FlashSAC algo defaults.
     algo=algo.flash_sac,
     # Same FlashSAC algorithm + same manager-based env, but driven by the
     # GPU-accelerated MuJoCo Warp (mjwarp) backend instead of IsaacSim.
@@ -107,16 +106,16 @@ g1_29dof_flash_sac_mjwarp = ExperimentConfig(
     simulator=simulator.mjwarp,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    # Mirror ``g1_29dof_flash_sac``: pair FlashSAC with holosoma's PPO-default
-    # reward+observation (Option A test). See ``g1_29dof_flash_sac`` above
-    # and ``docs/flashsac_port.md`` "Open work #2" for the rationale.
-    observation=observation.g1_29dof_loco_single_wolinvel,
+    # Mirror ``g1_29dof_flash_sac``: dedicated FlashSAC-compatible presets.
+    # See ``g1_29dof_flash_sac`` above for the empirical history and
+    # ``docs/flashsac_port.md`` Open work #3 for the Option A post-mortem.
+    observation=observation.g1_29dof_loco_single_flashsac,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    reward=reward.g1_29dof_loco,
+    reward=reward.g1_29dof_loco_flashsac,
 )
 
 g1_29dof_fpo = ExperimentConfig(

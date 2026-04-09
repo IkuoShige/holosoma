@@ -148,28 +148,35 @@ def test_bridge_actor_only_when_no_critic_group() -> None:
     assert infos["asymmetric_obs"] is False
 
 
-def test_g1_flash_sac_experiments_use_upstream_defaults() -> None:
+def test_g1_flash_sac_experiments_use_stripped_preset() -> None:
     """Regression: ``g1_29dof_flash_sac`` and ``g1_29dof_flash_sac_mjwarp``
-    use the upstream FlashSAC algo defaults verbatim (``temp_target_sigma=0.15``,
-    ``asymmetric_observation=False``, ``n_step=3``, ``use_amp=True``).
+    use upstream FlashSAC algo defaults (``temp_target_sigma=0.15``,
+    ``asymmetric_observation=False``, ``n_step=3``) paired with the
+    dedicated FlashSAC-compatible reward (``g1_29dof_loco_flashsac``) and
+    observation (``g1_29dof_loco_single_flashsac``).
 
-    The earlier ``temp_target_sigma=0.30`` override (commit 236042c) was
-    tested empirically at 20260408_181344 and did NOT improve gait quality
-    (bent-posture attractor persisted). Reverted under Option A
-    (docs/flashsac_port.md "Open work #2"): simultaneously roll back to
-    upstream sigma 0.15 AND swap the dedicated FlashSAC reward/observation
-    presets back to holosoma's PPO-default ``g1_29dof_loco`` +
-    ``g1_29dof_loco_single_wolinvel``, to test whether the stripped preset
-    is actually required.
+    Empirical history behind this pairing:
+
+    - **sigma=0.30 override** (commit 236042c) tested at 20260408_181344:
+      entropy converged to theoretical target +6.23 but gait quality did
+      NOT improve over sigma=0.15 baseline. Reverted.
+    - **Option A** (commit d422082) tested at 20260409_053822: pair FlashSAC
+      with holosoma's PPO-default ``g1_29dof_loco`` reward + upstream sigma
+      0.15. Actor collapsed to ``mean_action ≈ 0`` (flat-Q local optimum),
+      fell at deploy. Confirmed that the stripped preset is genuinely
+      required — the earlier negative at 20260408_124759 was NOT masking
+      the action-scale bug.
+    - **Known walking baseline**: 20260408_142832 / 20260408_154733 trained
+      the stripped-preset pairing to ~0.28 m/s forward, stable across seeds.
 
     This test guards ``config_values/loco/g1/experiment.py`` against
-    accidental drift from upstream FlashSAC defaults.
+    accidental regressions back to Option A or the sigma override.
     """
     from holosoma.config_values import observation, reward
     from holosoma.config_values.algo import flash_sac
     from holosoma.config_values.experiment import DEFAULTS
 
-    # Upstream default unchanged.
+    # Upstream algo default untouched.
     assert flash_sac.config.temp_target_sigma == 0.15, (
         "algo.flash_sac base default should stay at upstream 0.15."
     )
@@ -177,20 +184,21 @@ def test_g1_flash_sac_experiments_use_upstream_defaults() -> None:
     for key in ("g1_29dof_flash_sac", "g1_29dof_flash_sac_mjwarp"):
         exp = DEFAULTS[key]
         cfg = exp.algo.config
-        # No sigma override (upstream default passes through).
         assert cfg.temp_target_sigma == 0.15, (
             f"{key} should use upstream ``temp_target_sigma=0.15`` (got "
-            f"{cfg.temp_target_sigma}); the 0.30 override was reverted under "
-            f"Open work #2 after 20260408_181344 showed no gait improvement."
+            f"{cfg.temp_target_sigma}); the 0.30 override was reverted after "
+            f"20260408_181344 showed no gait improvement."
         )
-        # Paired with holosoma's PPO-default reward + observation (Option A).
-        assert exp.reward is reward.g1_29dof_loco, (
-            f"{key} should use the PPO-default ``g1_29dof_loco`` reward; "
-            f"see docs/flashsac_port.md Open work #2."
+        # Paired with the dedicated FlashSAC-compatible stripped preset.
+        assert exp.reward is reward.g1_29dof_loco_flashsac, (
+            f"{key} should use the stripped ``g1_29dof_loco_flashsac`` reward; "
+            f"Option A (pairing with PPO-default ``g1_29dof_loco``) was "
+            f"empirically negative at 20260409_053822. See "
+            f"docs/flashsac_port.md Open work #3."
         )
-        assert exp.observation is observation.g1_29dof_loco_single_wolinvel, (
-            f"{key} should use the PPO-default ``g1_29dof_loco_single_wolinvel`` "
-            f"observation; see docs/flashsac_port.md Open work #2."
+        assert exp.observation is observation.g1_29dof_loco_single_flashsac, (
+            f"{key} should use the stripped ``g1_29dof_loco_single_flashsac`` "
+            f"observation; Option A was empirically negative at 20260409_053822."
         )
 
 
