@@ -292,7 +292,7 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
         ),
         "feet_phase": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:feet_phase",
-            weight=0.5,  # PPO: 5.0 (10× weaker)
+            weight=2.5,  # PPO: 5.0 (2× weaker). 0.5 was too weak for backward gait.
             params={"swing_height": 0.09, "tracking_sigma": 0.008},
         ),
         "penalty_feet_ori": RewardTermCfg(
