@@ -258,7 +258,7 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
         ),
         "penalty_orientation": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_orientation",
-            weight=-3.0,  # PPO: -10.0 (3.3× weaker). -1.0 left root roll 2.3× PPO.
+            weight=-1.0,  # PPO: -10.0. -3.0 worsened stability (2.48× vs 1.87×). Reverted.
             params={},
         ),
         "penalty_action_rate": RewardTermCfg(
@@ -280,12 +280,15 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
             weight=-0.2,  # PPO: -0.5 (2.5× weaker). -0.05 left upper body 3-11× too loose.
             params={
                 "pose_weights": [
-                    0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # left leg
-                    0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # right leg
-                    50.0, 50.0, 50.0, 50.0, 50.0,       # upper body
-                    50.0, 50.0, 50.0, 50.0, 50.0,
-                    50.0, 50.0, 50.0, 50.0, 50.0,
-                    50.0, 50.0,
+                    0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # left leg (same as PPO)
+                    0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # right leg (same as PPO)
+                    # Upper body: 150 (PPO: 50). With pose weight -0.2,
+                    # effective = -30 (PPO: -25). Compensates for the 2.5×
+                    # weaker outer weight to match PPO's upper body constraint.
+                    150.0, 150.0, 150.0, 150.0, 150.0,  # upper body
+                    150.0, 150.0, 150.0, 150.0, 150.0,
+                    150.0, 150.0, 150.0, 150.0, 150.0,
+                    150.0, 150.0,
                 ],
             },
             tags=["penalty_curriculum"],
