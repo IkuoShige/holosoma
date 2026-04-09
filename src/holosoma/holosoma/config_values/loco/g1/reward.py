@@ -258,7 +258,7 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
         ),
         "penalty_orientation": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_orientation",
-            weight=-1.0,
+            weight=-3.0,  # PPO: -10.0 (3.3× weaker). -1.0 left root roll 2.3× PPO.
             params={},
         ),
         "penalty_action_rate": RewardTermCfg(
