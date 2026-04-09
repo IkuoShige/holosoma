@@ -277,7 +277,7 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
         # creates a lazy-attractor even at reduced weight.
         "pose": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:pose",
-            weight=-0.05,  # PPO: -0.5 (10× weaker)
+            weight=-0.2,  # PPO: -0.5 (2.5× weaker). -0.05 left upper body 3-11× too loose.
             params={
                 "pose_weights": [
                     0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # left leg
