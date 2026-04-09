@@ -86,7 +86,10 @@ g1_29dof_flash_sac = ExperimentConfig(
     # result at 20260408_124759 (also on g1_29dof_loco) was NOT masking the
     # action-scale bug after all. Reverted to the stripped preset.
     # See docs/flashsac_port.md "Open work #3" for the post-mortem.
-    observation=observation.g1_29dof_loco_single_flashsac,
+    # Use PPO-default observation (with sin/cos phase clock) since
+    # feet_phase is now in the reward. The flashsac reward preset
+    # has all PPO shaping terms at 10× weaker weights (except alive).
+    observation=observation.g1_29dof_loco_single_wolinvel,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
@@ -100,16 +103,11 @@ g1_29dof_flash_sac_mjwarp = ExperimentConfig(
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_mjwarp_manager"),
     # Mirror ``g1_29dof_flash_sac``: upstream FlashSAC algo defaults.
     algo=algo.flash_sac,
-    # Same FlashSAC algorithm + same manager-based env, but driven by the
-    # GPU-accelerated MuJoCo Warp (mjwarp) backend instead of IsaacSim.
-    # Requires the ``hsmujoco`` conda env (Python 3.10, torch 2.10, mujoco_warp).
     simulator=simulator.mjwarp,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    # Mirror ``g1_29dof_flash_sac``: dedicated FlashSAC-compatible presets.
-    # See ``g1_29dof_flash_sac`` above for the empirical history and
-    # ``docs/flashsac_port.md`` Open work #3 for the Option A post-mortem.
-    observation=observation.g1_29dof_loco_single_flashsac,
+    # Mirror ``g1_29dof_flash_sac``.
+    observation=observation.g1_29dof_loco_single_wolinvel,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,

@@ -266,38 +266,45 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
             weight=-0.005,
             params={},
         ),
-        # Pose penalty at 10× weaker than PPO default (-0.05 vs -0.5).
-        # Without this, FlashSAC walks but with bent posture (runs #6/#7).
-        # Full PPO weight collapses FlashSAC (run #9 Option A). This
-        # 10× reduction provides gentle posture guidance while staying
-        # below FlashSAC's collapse threshold. Under penalty_curriculum
-        # tag so it starts at 50% scale and ramps up.
+        # ---- Shaping terms below: all 10× weaker than PPO default ----
+        # Run #10 (pose=-0.05 only) showed forward walking improved but
+        # backward became two-foot jumping (no gait constraint). Runs
+        # #6/#7 (no shaping at all) walked with bent posture. Run #9
+        # (full PPO weights) collapsed. Strategy: add back ALL PPO
+        # shaping terms at 10× weaker weights to provide gentle guidance
+        # without triggering FlashSAC's zero-action attractor.
+        # ``alive`` is the only PPO term intentionally omitted — it
+        # creates a lazy-attractor even at reduced weight.
         "pose": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:pose",
-            weight=-0.05,
+            weight=-0.05,  # PPO: -0.5 (10× weaker)
             params={
                 "pose_weights": [
-                    # Left leg (6 DOFs)
-                    0.01,   # left_hip_yaw
-                    1.0,    # left_hip_roll
-                    5.0,    # left_hip_pitch
-                    0.01,   # left_knee
-                    5.0,    # left_ankle_pitch
-                    5.0,    # left_ankle_roll
-                    # Right leg (6 DOFs)
-                    0.01,   # right_hip_yaw
-                    1.0,    # right_hip_roll
-                    5.0,    # right_hip_pitch
-                    0.01,   # right_knee
-                    5.0,    # right_ankle_pitch
-                    5.0,    # right_ankle_roll
-                    # Upper body (17 DOFs)
-                    50.0, 50.0, 50.0, 50.0, 50.0,
+                    0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # left leg
+                    0.01, 1.0, 5.0, 0.01, 5.0, 5.0,    # right leg
+                    50.0, 50.0, 50.0, 50.0, 50.0,       # upper body
                     50.0, 50.0, 50.0, 50.0, 50.0,
                     50.0, 50.0, 50.0, 50.0, 50.0,
                     50.0, 50.0,
                 ],
             },
+            tags=["penalty_curriculum"],
+        ),
+        "feet_phase": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:feet_phase",
+            weight=0.5,  # PPO: 5.0 (10× weaker)
+            params={"swing_height": 0.09, "tracking_sigma": 0.008},
+        ),
+        "penalty_feet_ori": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_feet_ori",
+            weight=-0.5,  # PPO: -5.0 (10× weaker)
+            params={},
+            tags=["penalty_curriculum"],
+        ),
+        "penalty_close_feet_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_close_feet_xy",
+            weight=-1.0,  # PPO: -10.0 (10× weaker)
+            params={"close_feet_threshold": 0.15},
             tags=["penalty_curriculum"],
         ),
     },
