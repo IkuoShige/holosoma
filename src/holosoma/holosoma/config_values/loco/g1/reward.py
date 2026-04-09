@@ -266,6 +266,40 @@ g1_29dof_loco_flashsac = RewardManagerCfg(
             weight=-0.005,
             params={},
         ),
+        # Pose penalty at 10× weaker than PPO default (-0.05 vs -0.5).
+        # Without this, FlashSAC walks but with bent posture (runs #6/#7).
+        # Full PPO weight collapses FlashSAC (run #9 Option A). This
+        # 10× reduction provides gentle posture guidance while staying
+        # below FlashSAC's collapse threshold. Under penalty_curriculum
+        # tag so it starts at 50% scale and ramps up.
+        "pose": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:pose",
+            weight=-0.05,
+            params={
+                "pose_weights": [
+                    # Left leg (6 DOFs)
+                    0.01,   # left_hip_yaw
+                    1.0,    # left_hip_roll
+                    5.0,    # left_hip_pitch
+                    0.01,   # left_knee
+                    5.0,    # left_ankle_pitch
+                    5.0,    # left_ankle_roll
+                    # Right leg (6 DOFs)
+                    0.01,   # right_hip_yaw
+                    1.0,    # right_hip_roll
+                    5.0,    # right_hip_pitch
+                    0.01,   # right_knee
+                    5.0,    # right_ankle_pitch
+                    5.0,    # right_ankle_roll
+                    # Upper body (17 DOFs)
+                    50.0, 50.0, 50.0, 50.0, 50.0,
+                    50.0, 50.0, 50.0, 50.0, 50.0,
+                    50.0, 50.0, 50.0, 50.0, 50.0,
+                    50.0, 50.0,
+                ],
+            },
+            tags=["penalty_curriculum"],
+        ),
     },
 )
 
