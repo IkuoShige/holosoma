@@ -30,6 +30,16 @@ from holosoma.utils.simulator_config import SimulatorType, get_simulator_type, s
 from holosoma.utils.torch_utils import to_torch
 
 
+def is_effective_headless(config: ExperimentConfig | RunSimConfig) -> bool:
+    """Return the effective headless mode for simulator execution.
+
+    Enabling the viser bridge means visualization happens in the browser, so
+    the native Isaac Sim GUI should stay disabled even if training.headless was
+    left False.
+    """
+    return config.training.headless or config.simulator.config.viser.enabled
+
+
 def setup_simulator_imports(config: ExperimentConfig | RunSimConfig) -> None:
     """Setup simulator-specific imports without side effects.
 
@@ -86,7 +96,7 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     args_cli.seed = config.training.seed
     args_cli.env_spacing = config.simulator.config.scene.env_spacing
     args_cli.output_dir = config.logger.base_dir
-    args_cli.headless = config.training.headless
+    args_cli.headless = is_effective_headless(config)
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         # Distribute simulator across GPUs when using multi-gpu training
         args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
@@ -273,7 +283,7 @@ def setup_simulation_environment(
         logger.debug("Environment created successfully!")
 
         # Setup keyboard listener if not headless
-        if not config.training.headless:
+        if not is_effective_headless(config):
             setup_keyboard_listener(env)
 
     return env, device, simulation_app
@@ -399,8 +409,8 @@ class DirectSimulation:
         """
         logger.debug("Initializing simulator...")
 
-        # Need to manually set headless since it's in training config currently
-        self.simulator.set_headless(False)
+        # Keep direct simulation behavior aligned with the main environment path.
+        self.simulator.set_headless(is_effective_headless(self.config))
 
         # Step 1: Basic setup
         self.simulator.setup()
@@ -433,7 +443,7 @@ class DirectSimulation:
         logger.debug("simulator.on_episode_start() completed")
 
         # Step 6: Setup viewer if not headless
-        if not self.config.training.headless:
+        if not is_effective_headless(self.config):
             self.simulator.setup_viewer()
             logger.debug("simulator.setup_viewer() completed")
 

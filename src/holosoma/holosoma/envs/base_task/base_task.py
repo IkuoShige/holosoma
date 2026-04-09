@@ -16,6 +16,7 @@ from holosoma.managers.terrain import TerrainManager
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
 from holosoma.utils.helpers import get_class
 from holosoma.utils.safe_torch_import import torch
+from holosoma.utils.sim_utils import is_effective_headless
 from holosoma.utils.torch_utils import to_torch
 
 
@@ -104,7 +105,7 @@ class BaseTask:
             tyro_config=full_sim_config, terrain_manager=self.terrain_manager, device=device
         )
 
-        self.headless = self.training_config.headless
+        self.headless = is_effective_headless(tyro_config)
         self.simulator.set_headless(self.headless)
         self.simulator.setup()
         self.sim_dt = self.simulator.sim_dt
