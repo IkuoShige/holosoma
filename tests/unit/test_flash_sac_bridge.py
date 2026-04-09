@@ -148,38 +148,49 @@ def test_bridge_actor_only_when_no_critic_group() -> None:
     assert infos["asymmetric_obs"] is False
 
 
-def test_g1_flash_sac_experiments_use_widened_target_entropy() -> None:
+def test_g1_flash_sac_experiments_use_upstream_defaults() -> None:
     """Regression: ``g1_29dof_flash_sac`` and ``g1_29dof_flash_sac_mjwarp``
-    override ``temp_target_sigma`` from upstream 0.15 to 0.30.
+    use the upstream FlashSAC algo defaults verbatim (``temp_target_sigma=0.15``,
+    ``asymmetric_observation=False``, ``n_step=3``, ``use_amp=True``).
 
-    FlashSAC's upstream default is tuned against IsaacLab stock G1 where
-    the reward landscape has a clean walking gradient; holosoma's reward
-    zoo is subtly messier and FlashSAC's narrow near-deterministic policy
-    (target_entropy ≈ -13.87 at sigma=0.15) exploits reward-shaping local
-    optima. Widening sigma to 0.30 doubles per-dim sample noise and
-    moves target_entropy to ≈ +6.23, keeping the policy exploratory for
-    longer. See docs/flashsac_port.md "Open work #1" for rationale.
+    The earlier ``temp_target_sigma=0.30`` override (commit 236042c) was
+    tested empirically at 20260408_181344 and did NOT improve gait quality
+    (bent-posture attractor persisted). Reverted under Option A
+    (docs/flashsac_port.md "Open work #2"): simultaneously roll back to
+    upstream sigma 0.15 AND swap the dedicated FlashSAC reward/observation
+    presets back to holosoma's PPO-default ``g1_29dof_loco`` +
+    ``g1_29dof_loco_single_wolinvel``, to test whether the stripped preset
+    is actually required.
 
-    This test guards against accidental regressions in
-    ``config_values/loco/g1/experiment.py``. The base ``algo.flash_sac``
-    default is deliberately left at 0.15 to preserve upstream fidelity
-    for anyone running Gate A against IsaacLab stock.
+    This test guards ``config_values/loco/g1/experiment.py`` against
+    accidental drift from upstream FlashSAC defaults.
     """
+    from holosoma.config_values import observation, reward
     from holosoma.config_values.algo import flash_sac
     from holosoma.config_values.experiment import DEFAULTS
 
-    # Upstream default untouched.
+    # Upstream default unchanged.
     assert flash_sac.config.temp_target_sigma == 0.15, (
-        "algo.flash_sac base default should stay at upstream 0.15; only the "
-        "holosoma G1 experiments override it."
+        "algo.flash_sac base default should stay at upstream 0.15."
     )
 
-    # Both holosoma G1 FlashSAC experiments override to 0.30.
     for key in ("g1_29dof_flash_sac", "g1_29dof_flash_sac_mjwarp"):
-        cfg = DEFAULTS[key].algo.config
-        assert cfg.temp_target_sigma == 0.30, (
-            f"{key} should override temp_target_sigma to 0.30 (got "
-            f"{cfg.temp_target_sigma}); see docs/flashsac_port.md Open work #1."
+        exp = DEFAULTS[key]
+        cfg = exp.algo.config
+        # No sigma override (upstream default passes through).
+        assert cfg.temp_target_sigma == 0.15, (
+            f"{key} should use upstream ``temp_target_sigma=0.15`` (got "
+            f"{cfg.temp_target_sigma}); the 0.30 override was reverted under "
+            f"Open work #2 after 20260408_181344 showed no gait improvement."
+        )
+        # Paired with holosoma's PPO-default reward + observation (Option A).
+        assert exp.reward is reward.g1_29dof_loco, (
+            f"{key} should use the PPO-default ``g1_29dof_loco`` reward; "
+            f"see docs/flashsac_port.md Open work #2."
+        )
+        assert exp.observation is observation.g1_29dof_loco_single_wolinvel, (
+            f"{key} should use the PPO-default ``g1_29dof_loco_single_wolinvel`` "
+            f"observation; see docs/flashsac_port.md Open work #2."
         )
 
 

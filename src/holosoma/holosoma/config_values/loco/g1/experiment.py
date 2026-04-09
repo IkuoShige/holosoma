@@ -59,27 +59,15 @@ g1_29dof_fast_sac = ExperimentConfig(
 g1_29dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_manager"),
-    algo=replace(
-        algo.flash_sac,
-        config=replace(
-            algo.flash_sac.config,
-            num_learning_iterations=50000,
-            # Widen the target-entropy heuristic from upstream's 0.15
-            # to 0.30. FlashSAC's target_entropy = 0.5 * action_dim *
-            # log(2*pi*e*sigma^2); for 29-D G1 actions this moves the
-            # target from ≈ -13.87 (very narrow, per-dim std 0.15)
-            # to ≈ +6.23 (per-dim std 0.30, doubled sample noise).
-            # Upstream 0.15 is tuned against IsaacLab stock G1 where
-            # the reward landscape has a clean gradient toward walking;
-            # holosoma's reward is subtly messier and FlashSAC's narrow
-            # near-deterministic policy gets stuck in reward-shaping
-            # local optima. Wider target entropy keeps the policy
-            # exploring for longer. See docs/flashsac_port.md "Open work
-            # #1" for the rationale and commit log for the diagnostic
-            # history (esp. 20260408_124759 → 20260408_142832 runs).
-            temp_target_sigma=0.30,
-        ),
-    ),
+    # Use the upstream FlashSAC algo defaults verbatim: temp_target_sigma=0.15,
+    # asymmetric_observation=False, n_step=3, updates_per_interaction_step=2,
+    # use_amp=True, etc. — matching configs/agent/flashSAC.yaml and
+    # scripts/run_isaaclab.sh in /workspace/FlashSAC. The preceding
+    # ``temp_target_sigma=0.30`` override (20260408_181344) did not improve
+    # gait quality (bent-posture attractor persisted) so we revert to the
+    # paper default. See docs/flashsac_port.md "Open work #2" for the
+    # rationale.
+    algo=algo.flash_sac,
     # FlashSAC port targets the IsaacSim backend (Gate B). The vendored
     # algorithm itself is simulator-agnostic; only the underlying physics
     # backend differs from the existing g1_29dof_fast_sac (which uses
@@ -87,56 +75,48 @@ g1_29dof_flash_sac = ExperimentConfig(
     simulator=simulator.isaacsim,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    # Use the FlashSAC-tuned observation (no sin/cos phase clock) and
-    # reward (no feet_phase / alive / pose / feet_ori / close_feet_xy)
-    # presets. These mirror IsaacLab stock ``Isaac-Velocity-Flat-G1-v0``,
-    # which is the reference task FlashSAC's hyperparameters were trained
-    # on. Earlier attempts using holosoma's PPO/FastSAC reward shape all
-    # collapsed FlashSAC's narrow deterministic policy into a degenerate
-    # "step in place to match clock" attractor created by feet_phase, OR
-    # "stand still and collect alive". See the inline comments on
-    # ``g1_29dof_loco_flashsac`` and ``g1_29dof_loco_single_flashsac`` for
-    # the per-term rationale.
-    observation=observation.g1_29dof_loco_single_flashsac,
+    # Option A recipe (docs/flashsac_port.md "Open work #2"): pair FlashSAC
+    # with holosoma's PPO-default reward+observation (same pair used by
+    # g1_29dof_loco / g1_29dof_fpo / g1_29dof_fast_sac). This tests whether
+    # the dedicated stripped "flashsac" preset is actually required — if
+    # FlashSAC converges here, the port becomes much more usable across
+    # holosoma's reward zoo. If it collapses (the "twitch in place" /
+    # "stand still and collect alive" attractors previously observed at
+    # 20260407_170834 … 20260408_065029), fall back to
+    # ``g1_29dof_loco_flashsac`` + ``g1_29dof_loco_single_flashsac``
+    # which are still registered and known to walk (20260408_142832 /
+    # 20260408_154733 baseline, ~0.28 m/s forward).
+    observation=observation.g1_29dof_loco_single_wolinvel,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    reward=reward.g1_29dof_loco_flashsac,
+    reward=reward.g1_29dof_loco,
 )
 
 g1_29dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-g1-manager", name="g1_29dof_flash_sac_mjwarp_manager"),
-    algo=replace(
-        algo.flash_sac,
-        config=replace(
-            algo.flash_sac.config,
-            num_learning_iterations=50000,
-            # Mirror ``g1_29dof_flash_sac``: widen target-entropy sigma
-            # from 0.15 to 0.30 so FlashSAC's policy stays more
-            # exploratory on holosoma's reward landscape.
-            temp_target_sigma=0.30,
-        ),
-    ),
+    # Mirror ``g1_29dof_flash_sac``: use upstream FlashSAC algo defaults
+    # verbatim, including ``temp_target_sigma=0.15``.
+    algo=algo.flash_sac,
     # Same FlashSAC algorithm + same manager-based env, but driven by the
     # GPU-accelerated MuJoCo Warp (mjwarp) backend instead of IsaacSim.
     # Requires the ``hsmujoco`` conda env (Python 3.10, torch 2.10, mujoco_warp).
     simulator=simulator.mjwarp,
     robot=robot.g1_29dof,
     terrain=terrain.terrain_locomotion_mix,
-    observation=observation.g1_29dof_loco_single_flashsac,
+    # Mirror ``g1_29dof_flash_sac``: pair FlashSAC with holosoma's PPO-default
+    # reward+observation (Option A test). See ``g1_29dof_flash_sac`` above
+    # and ``docs/flashsac_port.md`` "Open work #2" for the rationale.
+    observation=observation.g1_29dof_loco_single_wolinvel,
     action=action.g1_29dof_joint_pos,
     termination=termination.g1_29dof_termination,
     randomization=randomization.g1_29dof_randomization,
     command=command.g1_29dof_command,
     curriculum=curriculum.g1_29dof_curriculum_fast_sac,
-    # Mirror ``g1_29dof_flash_sac``: use the FlashSAC-tuned reward preset
-    # that strips out feet_phase / alive / pose / feet_ori / close_feet_xy
-    # so the narrow deterministic policy cannot exploit any of those
-    # local optima. See ``g1_29dof_loco_flashsac`` for the rationale.
-    reward=reward.g1_29dof_loco_flashsac,
+    reward=reward.g1_29dof_loco,
 )
 
 g1_29dof_fpo = ExperimentConfig(

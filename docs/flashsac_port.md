@@ -2,7 +2,7 @@
 
 This document describes the holosoma port of [FlashSAC](https://github.com/joonleesky/FlashSAC) — the off-policy SAC variant published in *FlashSAC: Fast and Stable Off-Policy Reinforcement Learning for High-Dimensional Robot Control* (Kim et al., arXiv 2026).
 
-> **Honest status (snapshot at the end of the porting sprint):** every upstream file is vendored, every test gate is green, the IsaacSim Gate B path can train a G1 policy that *eventually walks*, but the practical usability is still rough. FlashSAC will not converge against holosoma's standard locomotion reward — it requires a dedicated stripped-down preset that mirrors IsaacLab stock. Walking quality is "it's walking, but not benchmark-clean", and several auxiliary features (ONNX export, multi-GPU, `g1_29dof_loco` compatibility) are not done. See *Current state and limitations* and *Open work* below for the full picture.
+> **Honest status (snapshot after Option A config change):** every upstream file is vendored, every test gate is green, the IsaacSim Gate B path trains a G1 policy that walks (~0.28 m/s forward on the dedicated stripped preset). Recent findings: the port itself is byte-identical to upstream on all audited paths — a line-cited code audit of the 4 items Codex flagged cleared them all. The previous `temp_target_sigma=0.30` widening (`20260408_181344`) did NOT improve gait quality empirically and was reverted. Latest configuration: upstream algo defaults verbatim (sigma=0.15, asymmetric_observation=false, n_step=3) + holosoma's PPO-default reward+observation (`g1_29dof_loco` + `g1_29dof_loco_single_wolinvel`). Whether this "Option A" recipe converges to clean walking is the single most important open question; the previous stripped preset remains registered as a verified fallback (walks at 20260408_142832 / 20260408_154733). See *Open work #3* for the Option A rationale and *Current state and limitations* for caveats.
 
 ## Three layers
 
@@ -236,7 +236,7 @@ Removed entirely: `feet_phase`, `alive`, `pose`, `penalty_feet_ori`,
 
 ### Trial-and-error history (so future contributors do not repeat it)
 
-Six training attempts on G1 walking, each diagnosing one layer:
+Eight training attempts on G1 walking, each diagnosing one layer:
 
 | # | Run dir suffix | Fix applied | Empirical result | Root cause unblocked |
 |---|---|---|---|---|
@@ -247,21 +247,25 @@ Six training attempts on G1 walking, each diagnosing one layer:
 | 5 | `20260408_124759` | switched reward `_fast_sac` (alive=10) → `g1_29dof_loco` (alive=1) | **dist 0.049 m / 500 steps** (≈ 0.005 m/s). `feet_phase` ep_sum +36 dominated the per-term decomposition; the policy learned to match the foot-phase clock *in place*. | alive bonus reduced; feet_phase exploit revealed |
 | 6 | `20260408_142832` | dedicated `g1_29dof_loco_flashsac` reward + `g1_29dof_loco_single_flashsac` obs (this preset) | **Walks. dist 2.85 m / 10 s, avg speed 0.28 m/s**, stays upright, tracks commanded velocity + yaw through curving world-frame trajectories. Not benchmark-clean but unambiguously walking. | Reward shape stripped to IsaacLab-stock minimum |
 | 7 | `20260408_154733` | reproducibility re-run of #6 with a different training seed | **Walks. dist 2.80 m / 10 s, avg speed 0.28 m/s**. Final TB metrics (critic_loss 2.10, actor_loss -2.71, entropy -13.81) match #6 within ±0.02 — the convergence basin is stable across seeds. | – |
+| 8 | `20260408_181344` | widen `temp_target_sigma` 0.15 → 0.30 (stripped reward held fixed) | Entropy converged to theoretical target +6.23 (mechanically correct), but gait quality did NOT improve over #6/#7: visibly walks with bent posture. Policy gait plateau is not an entropy-budget issue. | Identified that the bottleneck is reward/env-side, not action noise |
+| **9** | **(Option A — running)** | σ reverted to 0.15 + reward swapped to `g1_29dof_loco` (PPO default) + obs to `g1_29dof_loco_single_wolinvel` | Pending | Will answer whether FlashSAC is usable against holosoma's default reward zoo |
 
 Codex was consulted at attempt #5 → #6 transition and converged on the same
 diagnosis (degenerate `feet_phase` attractor + restrictive pose penalty +
 narrow FlashSAC policy = "step in place and torso-locked" local optimum).
+After #8 a second dual-audit pass (Claude's python-reviewer + Codex rescue)
+was run against the port's 4 Codex-flagged correctness items; both cleared
+every item as byte-identical-to-upstream. The bent-posture symptom is
+therefore a reward/env issue, not a port-side correctness bug, which is
+why #9 (Option A) swaps back to holosoma's PPO-default reward+observation
+as the next empirical probe.
 
 > **Historical note**: an earlier version of this doc reported that
 > attempt #6 "does not really walk (dist 0.049 m / 10 s)" based on a probe
 > whose output was mis-attributed to the wrong run directory. A careful
-> re-probe of both checkpoints (commit `<this commit>`) confirmed that #5
-> (alive=1 with feet_phase still present) is the "twitch in place" run
-> and #6 (stripped reward) is the walking run. Walking was achieved by
-> the reward-shape ablation alone; the subsequent open-work item
-> `temp_target_sigma=0.30` is still pending verification and may further
-> improve gait quality but is not required to get the policy off the
-> ground.
+> re-probe of both checkpoints confirmed that #5 (alive=1 with
+> feet_phase still present) is the "twitch in place" run and #6 (stripped
+> reward) is the walking run.
 
 ## Running on MuJoCo Warp (mjwarp)
 
@@ -269,8 +273,11 @@ The same `FlashSACAgent(BaseAlgo)` adapter also works with the GPU-accelerated
 MuJoCo Warp backend, because the bridge talks to `BaseTask` (simulator-agnostic)
 rather than to the IsaacSim API directly. A sister experiment
 `g1_29dof_flash_sac_mjwarp` is wired with `simulator=simulator.mjwarp` and lives
-alongside the IsaacSim variant. Both use the same `g1_29dof_loco_flashsac`
-reward and `g1_29dof_loco_single_flashsac` observation presets.
+alongside the IsaacSim variant. Both use the holosoma PPO-default
+`g1_29dof_loco` reward and `g1_29dof_loco_single_wolinvel` observation
+(see Option A / Open work #3); the older dedicated `g1_29dof_loco_flashsac`
+/ `g1_29dof_loco_single_flashsac` presets remain registered as a verified
+fallback that walks at ~0.28 m/s (runs `20260408_142832` / `20260408_154733`).
 
 Required setup (one-time):
 
@@ -345,8 +352,22 @@ Useful tunables to override on the CLI:
 --algo.config.use-amp=False       # disable AMP if hitting fp16 instability
 --algo.config.normalize-reward=False
 --algo.config.temp-target-sigma=0.30   # widen target entropy (default 0.15)
-                                       # — see "Open work" below
+                                       # — tested at 20260408_181344 with
+                                       # negative result; see Open work #1
 ```
+
+**Fallback to the dedicated stripped preset** (if Option A / Open work #3
+collapses on the PPO-default reward zoo):
+
+```
+# The stripped preset stays registered but is no longer the default.
+# If Option A fails, override on the CLI:
+--reward:g1-29dof-loco-flashsac
+--observation:g1-29dof-loco-single-flashsac
+```
+
+Runs `20260408_142832` / `20260408_154733` trained this fallback combination
+to a stable walking basin (~0.28 m/s forward, bent-posture quality).
 
 ### Watch metrics
 
@@ -477,7 +498,7 @@ bash scripts/run_flashsac_isaaclab_smoke.sh
 | 10 | `eval_agent.py` integration via dual-format `.ckpt` | ✅ |
 | 11 | Checkpoint migration script for legacy directories | ✅ |
 | 12 | **Walking on G1 IsaacSim with the FlashSAC-tuned reward preset** | ⚠️ "kind of walking" (not benchmark-clean) |
-| 13 | Walking on G1 with `reward.g1_29dof_loco` (PPO default) | ❌ converges to stand-still |
+| 13 | Walking on G1 with `reward.g1_29dof_loco` (PPO default) | ⏳ Option A empirical run pending (earlier "stand-still" result was at attempt #5 / `20260408_124759`, before the action-scale fix. Re-opened as Open work #3 under the now-current uniform `scale=0.5` action bridge + upstream sigma=0.15 algo defaults.) |
 | 14 | Full mjwarp training (not just smoke) | ❌ untested |
 | 15 | ONNX export | ❌ raises NotImplementedError |
 | 16 | Multi-GPU validation | ❌ untested |
@@ -492,11 +513,13 @@ checkpoint format is compatible with holosoma's standard inspection tools.
 
 The port is **not production-quality** in the following ways:
 
-### 1. FlashSAC requires a dedicated reward and observation preset
+### 1. Whether FlashSAC needs a dedicated reward/observation preset is now being re-tested
 
-`FlashSAC` cannot use `reward.g1_29dof_loco` (PPO default), let alone the FastSAC preset. It requires the stripped-down `g1_29dof_loco_flashsac` reward and `g1_29dof_loco_single_flashsac` observation that mirror IsaacLab stock as closely as possible. Six training attempts confirmed this empirically. Adding any of {`feet_phase`, `alive ≥ 1.0`, `pose` with upper-body weight 50, `penalty_action_rate ≤ -2.0`, sin/cos phase obs} can drive FlashSAC into a degenerate local optimum.
+The previous conclusion ("FlashSAC cannot use `reward.g1_29dof_loco` and requires the stripped preset") was drawn from attempts #1-#5 which were **also** confounded by the action-scale bug (attempts #1, #2, #3, #4 all had the wrong action range) and by the FastSAC alive-bonus carry-over (attempt #5). After those fixes landed, the stripped-preset run at attempt #6 walked, but the PPO-default preset was never re-tested on top of the fully-fixed action bridge.
 
-This means **adding FlashSAC support to a new robot or task in holosoma is not as simple as adding a new experiment subcommand** — you have to also create a stripped-down reward and observation preset matching the IsaacLab-stock pattern.
+**Open work #3 (Option A)** re-runs exactly that control. As of the current HEAD `g1_29dof_flash_sac` / `g1_29dof_flash_sac_mjwarp` use `reward=g1_29dof_loco` + `observation=g1_29dof_loco_single_wolinvel` + upstream algo defaults (sigma=0.15, asymmetric_observation=false, n_step=3). Whether this converges to walking is pending empirical verification.
+
+If it converges, the dedicated stripped preset is no longer required and the port becomes drop-in for holosoma's reward zoo. If it collapses, the stripped preset remains registered as a verified fallback (20260408_142832 / 20260408_154733 baseline).
 
 ### 2. Walking quality is "it walks" not "benchmark-clean"
 
@@ -564,31 +587,81 @@ hyperparameter tuning, these are the next things to inspect.
 Suggested order, in increasing scope:
 
 1. ~~**Re-run with `temp_target_sigma=0.30` (was 0.15)** against the current
-   `g1_29dof_loco_flashsac` preset.~~ ✅ **DONE as a config change.** Both
-   `g1_29dof_flash_sac` and `g1_29dof_flash_sac_mjwarp` now override
-   `temp_target_sigma` to 0.30 in `config_values/loco/g1/experiment.py`;
-   the base `algo.flash_sac` default remains 0.15 for upstream-fidelity
-   Gate A runs. Target entropy moves from ≈ -13.87 (per-dim std 0.15) to
-   ≈ +6.23 (per-dim std 0.30, doubled per-action sample noise). The
-   empirical walking-quality check is still pending: run the recipe
-   below and verify the policy no longer saturates at the first local
-   optimum it finds.
-2. **Try widening to `temp_target_sigma=0.30` *and* swap reward back to
-   `g1_29dof_loco` (PPO default with alive=1.0)**. If this trains to walking,
-   the dedicated FlashSAC reward preset becomes optional rather than required
-   and the port becomes much more usable across holosoma's reward zoo. ~45 min.
-3. **Audit the port-side items Codex flagged.** Specifically the four
-   bullets at the end of "Current state and limitations". Reading-only,
-   1-2 hours.
-4. **Implement `actor_onnx_wrapper`**. Mirror `FastSACAgent.actor_onnx_wrapper`
-   but with the FlashSAC actor's `get_mean_and_std` head. ~1-2 hours.
-5. **Full mjwarp training.** Run the full 48 829-iteration recipe in
+   `g1_29dof_loco_flashsac` preset.~~ ❌ **DONE and NEGATIVE.** Training run
+   `20260408_181344` converged the actor entropy to the theoretical target
+   (+6.23 matches `0.5 * 29 * log(2πe * 0.09)`), so the sigma widening was
+   mechanically correct, but the resulting gait was not visibly better than
+   the σ=0.15 baseline (`20260408_142832` / `20260408_154733`) — the policy
+   still walked with visibly bent posture. Conclusion: action-noise budget is
+   NOT the bottleneck. Override reverted to upstream 0.15 alongside the
+   Option A change below.
+2. ~~**Audit port-side items Codex flagged.**~~ ✅ **DONE.** Line-cited audit
+   of `_vendored/flash_rl/agents/flashSAC/agent.py`, `layer.py`, `update.py`,
+   `buffers/torch_buffer.py`, and the holosoma adapter/bridge against
+   `/workspace/FlashSAC` found:
+   - **Item 1 (stochastic sample vs deterministic eval):** OK. `training=True`
+     uses `tanh(mu + sigma*eps*temperature=1.0)`; `training=False` uses
+     `tanh(mu)` directly (temperature=0.0 short-circuit in
+     `_sample_flashsac_actions`). The flag plumbs correctly from
+     `FlashSACAgent.evaluate_policy` → inner `sample_actions`.
+   - **Item 2 (tanh-squash log-prob correction):** OK.
+     `safe_tanh_log_det_jacobian(x) = 2*(log(2) - x - softplus(-2x))` is
+     applied in `NormalTanhPolicy.forward` and threaded through both
+     `update_actor` and `update_temperature` via `info["log_prob"]`. Byte-
+     identical to upstream.
+   - **Item 3 (target entropy sign / magnitude):** OK. Formula at
+     `agent.py:355` matches the unbounded-Gaussian heuristic; temperature
+     loss `alpha * (entropy - target_entropy)` has the correct sign (raises
+     alpha when entropy < target, lowers when > target). Numerical check:
+     σ=0.15 → -13.86, σ=0.30 → +6.24.
+   - **Item 4 (n-step buffer + terminated/truncated alignment):** OK.
+     Bridge splits `truncated = time_outs`, `terminated = reset & ~time_outs`;
+     buffer n-step mask uses `done = terminated | truncated` so the n-step
+     return truncates at either; but `batch["terminated"]` (the zero-bootstrap
+     flag used by the critic target) preserves only the true terminations.
+     Final-obs alignment between bridge and buffer was separately verified.
+   - **False alarm on "privileged observation leakage":** the initial audit
+     flagged that `asymmetric_observation=False` (holosoma default) makes the
+     actor consume the full `[actor_obs || critic_obs]` concat. This is the
+     **intended upstream behavior**: `/workspace/FlashSAC/scripts/run_isaaclab.sh`
+     *explicitly* sets `--overrides agent.asymmetric_observation=false` for
+     `Isaac-Velocity-Flat-G1-v0`. Our bridge matches upstream exactly.
+   - **Dormant bug in `get_inference_policy`:** the closure at
+     `flash_sac_agent.py:385-401` only feeds `obs[actor_obs_keys[0]]` to the
+     actor, but the actor was trained with `input_dim = total_obs_dim`.
+     Shape-mismatch at call time. However, the closure is currently only
+     reachable via `actor_onnx_wrapper`, which raises `NotImplementedError`,
+     so it is dormant. The `eval_agent.py` → `FlashSACAgent.evaluate_policy` →
+     bridge path returns the full concat and is unaffected. Must be fixed
+     before Open work #4 (ONNX export).
+3. **Option A — pair FlashSAC with holosoma's PPO-default reward+observation
+   AND revert `temp_target_sigma` to upstream 0.15.** ⏳ **Config applied,
+   empirical run pending.** `g1_29dof_flash_sac` / `g1_29dof_flash_sac_mjwarp`
+   now use `reward=g1_29dof_loco` + `observation=g1_29dof_loco_single_wolinvel`
+   + upstream algo defaults (`temp_target_sigma=0.15`, `asymmetric_observation
+   =false`, `n_step=3`, `updates_per_interaction_step=2`, `use_amp=true`).
+   This is **one training run** that answers two questions at once:
+   - Is holosoma's PPO-default reward zoo compatible with FlashSAC? (If yes,
+     the dedicated stripped preset becomes optional.)
+   - Was the σ=0.30 widening actively harmful relative to the paper default?
+   If this run walks cleanly, the port is usable across holosoma's reward
+   zoo. If it collapses into the previously-observed "twitch in place" /
+   "stand still and collect alive" attractors, fall back to the stripped
+   preset (`g1_29dof_loco_flashsac` + `g1_29dof_loco_single_flashsac` are
+   still registered and verified to walk at ~0.28 m/s on `20260408_142832`
+   and `20260408_154733`) and move on to Open work #4+.
+4. **Implement `actor_onnx_wrapper`** (and fix the `get_inference_policy`
+   shape-mismatch bug uncovered in #2). Mirror `FastSACAgent.actor_onnx_wrapper`
+   but with the FlashSAC actor's `get_mean_and_std` head, feeding the full
+   `[actor_obs || critic_obs]` concat that matches what `evaluate_policy`
+   already gives the actor. ~1-2 hours.
+5. **Full mjwarp training.** Run the full ~48 829-iteration recipe in
    `hsmujoco` and confirm walking quality is comparable to the IsaacSim run.
 6. **Multi-GPU validation.** Run `torchrun --nproc_per_node=2
    train_agent.py exp:g1-29dof-flash-sac …` and confirm gradients converge.
 7. **T1 / K1 experiment configs.** Add `t1_29dof_flash_sac` and
-   `k1_22dof_flash_sac` plus matching FlashSAC-tuned reward / observation
-   presets for each robot.
+   `k1_22dof_flash_sac`. Whether they need dedicated FlashSAC-tuned presets
+   depends on the outcome of Option A (#3).
 8. **Re-train all FlashSAC G1 runs** with the converged hyperparameters and
    the reward preset that ends up working, and replace the legacy
    checkpoints with a single canonical "good" checkpoint and a recorded run.
@@ -596,9 +669,8 @@ Suggested order, in increasing scope:
    a different action and observation schema and FlashSAC's collapse
    dynamics may be even harsher there.
 
-Tasks 1 and 2 are by far the highest leverage: a single 45-minute training
-run answers whether holosoma's reward zoo can be supported without the
-dedicated FlashSAC preset.
+Task #3 (Option A) is by far the highest leverage remaining — one 45-minute
+training run answers the usability question for the whole port.
 
 ## Commit history (porting sprint)
 
