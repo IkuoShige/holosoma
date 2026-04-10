@@ -173,8 +173,9 @@ bash scripts/run_flashsac_k1_holosoma_smoke.sh
 |---|---|---|---|
 | 1 | `20260410_043117` | G1 v5 defaults (feet_phase=4.0, swing=0.09, action_rate=-0.005, tracking=2.0) | **Shuffle gait** — small rapid steps, no foot lifting. actor/loss=-2.24, temp→0.0004. |
 | 2 | `20260410_054053` | feet_phase 4→7, swing 0.09→0.065, action_rate→-0.001 | Marginal improvement, still shuffling. actor/loss=-3.04. |
-| 3 | `20260410_065007` | feet_phase 7→12.0, swing 0.065→0.04, tracking_lin_vel 2.0→**1.0** | **Worse** — stopped walking. Marching in place. Halved tracking killed forward drive. |
-| 4 | (pending) | Restore tracking_lin_vel→**2.0**, feet_phase 12→**10.0**, keep swing 0.04 + action_rate -0.001 | Balance: full forward drive + strong gait enforcement. |
+| 3 | `20260410_065007` | feet_phase 7→12, swing 0.065→0.04, tracking 2.0→**1.0** | **Worse** — marching in place. Halved tracking killed forward drive. |
+| 4 | `20260410_072839` | Restore tracking→2.0, feet_phase 12→10, keep swing 0.04 | **Still no walk.** Temperature=0.0004 in ALL v1-v4 runs. |
+| 5 | (pending) | **Algorithm fix:** temp_target_sigma 0.15→**0.25**, reward reverted to v2 | Root cause was temperature collapse, not reward. sigma=0.25 raises target_entropy from -10.53 to +0.74. |
 
 ### Why K1 shuffles (FlashSAC-specific failure mode)
 
@@ -186,12 +187,13 @@ K1 is especially vulnerable because it lacks waist DOFs (0 vs G1's 3). G1 can us
 
 **Strategy**: Make foot-lifting the dominant reward from step 1, so the first local optimum the policy finds IS proper gait:
 
-| Parameter | G1 v5 | K1 v3 | Rationale |
+| Parameter | G1 v5 | K1 v5 | Rationale |
 |---|---|---|---|
-| `feet_phase` weight | 4.0 | **12.0** | 3× G1. Must dominate over tracking to prevent shuffle. |
-| `swing_height` | 0.09 | **0.04** | K1 shorter legs. Low target that demands feet off ground. |
-| `tracking_lin_vel` | 2.0 | **1.0** | Halved. Reduces incentive to chase velocity via shuffle. |
-| `penalty_action_rate` | -0.005 | **-0.001** | 5× weaker. Allow large joint movements for real steps. |
+| `temp_target_sigma` | 0.15 | **0.25** | K1 needs wider exploration (no waist DOFs). Prevents temperature collapse. |
+| `feet_phase` weight | 4.0 | **7.0** | Stronger gait enforcement for K1. |
+| `swing_height` | 0.09 | **0.065** | K1 shorter legs. |
+| `penalty_action_rate` | -0.005 | **-0.001** | 5× weaker. Allow large joint movements. |
+| `tracking_lin_vel` | 2.0 | **2.0** | Keep full weight (halving killed forward drive in v3). |
 
 ### K1 vs G1 morphology differences
 
