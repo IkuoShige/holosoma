@@ -1,5 +1,7 @@
 """Locomotion reward presets for the K1 robot."""
 
+from dataclasses import replace as _replace
+
 from holosoma.config_types.reward import RewardManagerCfg, RewardTermCfg
 from holosoma.config_values.loco.flashsac_transform import (
     K1_UPPER_BODY_POSE_INDICES,
@@ -195,9 +197,37 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 # Head joints (AAHead_yaw, Head_pitch) are boosted to 150 along with
 # arm joints. G1 has no head DOFs so this is a deliberate K1 extension
 # of the v5 recipe — the head should stay stable during locomotion.
-k1_22dof_loco_flashsac = make_flashsac_reward(
+#
+# K1-specific tuning (run 20260410_043117):
+#   - feet_phase 4.0 → 7.0, swing_height 0.09 → 0.065: K1 has no waist
+#     DOFs so it cannot use torso rotation for stride length. Higher
+#     feet_phase weight forces proper foot lifting instead of shuffle.
+#     Lower swing_height matches K1's shorter legs (achievable target).
+#   - penalty_action_rate -0.005 → -0.001: allow larger joint movements
+#     to produce real steps instead of vibration.
+_k1_base = make_flashsac_reward(
     k1_22dof_loco,
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
+    weight_overrides={
+        "penalty_ang_vel_xy": -0.05,
+        "penalty_orientation": -1.0,
+        "penalty_action_rate": -0.001,  # G1: -0.005. K1 needs larger movements.
+        "pose": -0.2,
+        "feet_phase": 7.0,  # G1: 4.0. K1 needs stronger gait enforcement (no waist).
+        "penalty_feet_ori": -0.5,
+        "penalty_close_feet_xy": -1.0,
+    },
+)
+# Patch feet_phase swing_height: K1's shorter legs can't reach 0.09m reliably.
+k1_22dof_loco_flashsac = _replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "feet_phase": _replace(
+            _k1_base.terms["feet_phase"],
+            params={"swing_height": 0.065, "tracking_sigma": 0.008},
+        ),
+    },
 )
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]

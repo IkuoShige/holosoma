@@ -111,24 +111,18 @@ def test_k1_reward_transform_produces_expected_terms() -> None:
     assert pw[12] == 5.0, f"K1 pose_weights[12] (Left_Hip_Yaw) should be 5.0, got {pw[12]}"
 
 
-def test_k1_flashsac_preset_matches_transform() -> None:
-    """The hand-registered k1_22dof_loco_flashsac matches make_flashsac_reward output."""
-    from holosoma.config_values.loco.flashsac_transform import (
-        K1_UPPER_BODY_POSE_INDICES,
-        make_flashsac_reward,
-    )
-    from holosoma.config_values.loco.k1.reward import k1_22dof_loco, k1_22dof_loco_flashsac
+def test_k1_flashsac_preset_has_k1_tuned_values() -> None:
+    """k1_22dof_loco_flashsac has K1-specific tuning on top of v5 recipe."""
+    from holosoma.config_values.loco.k1.reward import k1_22dof_loco_flashsac
 
-    generated = make_flashsac_reward(
-        k1_22dof_loco, upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES
-    )
-
-    assert set(generated.terms.keys()) == set(k1_22dof_loco_flashsac.terms.keys())
-    for name in k1_22dof_loco_flashsac.terms:
-        gen = generated.terms[name]
-        ref = k1_22dof_loco_flashsac.terms[name]
-        assert gen.weight == ref.weight, f"Weight mismatch on '{name}'"
-        if name == "pose":
-            gen_pw = gen.params.get("pose_weights", [])
-            ref_pw = ref.params.get("pose_weights", [])
-            assert gen_pw == ref_pw, f"pose_weights mismatch"
+    # K1-tuned values that differ from G1 defaults
+    assert k1_22dof_loco_flashsac.terms["feet_phase"].weight == 7.0
+    assert k1_22dof_loco_flashsac.terms["feet_phase"].params["swing_height"] == 0.065
+    assert k1_22dof_loco_flashsac.terms["penalty_action_rate"].weight == -0.001
+    # Shared v5 values
+    assert k1_22dof_loco_flashsac.terms["pose"].weight == -0.2
+    assert "alive" not in k1_22dof_loco_flashsac.terms
+    # Upper body (0-9) boosted to 150
+    pw = k1_22dof_loco_flashsac.terms["pose"].params["pose_weights"]
+    for i in range(0, 10):
+        assert pw[i] == 150.0, f"pose_weights[{i}] should be 150"
