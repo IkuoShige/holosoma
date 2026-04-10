@@ -218,16 +218,19 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 #       → eval: fwd=0.266m/s (53% tracking), LEFT leg 0.78Hz (correct),
 #       RIGHT leg 5.86Hz (vibration). L-R asymmetry is primary issue.
 #       FlashSAC has no symmetry mechanism (PPO has use_symmetry=True).
-#   v10 (current): action_rate -0.005→-0.05 to suppress R-leg 5.86Hz
-#       vibration. 10x stronger than G1 but K1 needs it to compensate
-#       for missing symmetry enforcement.
+#   v10 20260410_125717: action_rate -0.05 + symmetry augmentation
+#       → L-R asymmetry FIXED (both legs 0.78Hz). fwd=0.29m/s.
+#       But hip amplitude still small (0.15rad vs 0.56rad available).
+#   v11 (current): revert action_rate to -0.005 (G1 value). The
+#       symmetry augmentation fixed R-leg vibration; the 10x action_rate
+#       penalty is no longer needed and suppresses stride amplitude.
 _k1_base = make_flashsac_reward(
     k1_22dof_loco,
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.05,  # v9: -0.005. 10x to suppress R-leg vibration.
+        "penalty_action_rate": -0.005,  # G1 value. Symmetry fixes vibration.
         "pose": -0.2,
         "feet_phase": 4.0,
         "penalty_feet_ori": -0.5,
