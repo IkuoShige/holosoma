@@ -242,23 +242,40 @@ _k1_base = make_flashsac_reward(
 )
 # K1's shorter legs: swing_height 0.09→0.065.
 # Tighten tracking_sigma 0.25→0.1 for sharper velocity tracking.
-k1_22dof_loco_flashsac = _replace(
-    _k1_base,
-    terms={
-        **_k1_base.terms,
-        "tracking_lin_vel": _replace(
-            _k1_base.terms["tracking_lin_vel"],
-            params={"tracking_sigma": 0.1},
-        ),
-        "tracking_ang_vel": _replace(
-            _k1_base.terms["tracking_ang_vel"],
-            params={"tracking_sigma": 0.1},
-        ),
-        "feet_phase": _replace(
-            _k1_base.terms["feet_phase"],
-            params={"swing_height": 0.065, "tracking_sigma": 0.008},
-        ),
-    },
+# v16: zero hip_pitch pose penalty (indices 10, 16) to remove residual
+# resistance to large hip excursions. Knee stays at 0.01 to prevent
+# the policy from substituting knee/ankle motion for hip swing.
+def _patch_hip_pitch_pose(base: RewardManagerCfg) -> RewardManagerCfg:
+    """Zero out hip_pitch pose_weights so the pose term doesn't penalise stride."""
+    pose_term = base.terms["pose"]
+    pw = list(pose_term.params["pose_weights"])
+    pw[10] = 0.0  # Left_Hip_Pitch
+    pw[16] = 0.0  # Right_Hip_Pitch
+    return _replace(
+        base,
+        terms={**base.terms, "pose": _replace(pose_term, params={**pose_term.params, "pose_weights": pw})},
+    )
+
+
+k1_22dof_loco_flashsac = _patch_hip_pitch_pose(
+    _replace(
+        _k1_base,
+        terms={
+            **_k1_base.terms,
+            "tracking_lin_vel": _replace(
+                _k1_base.terms["tracking_lin_vel"],
+                params={"tracking_sigma": 0.1},
+            ),
+            "tracking_ang_vel": _replace(
+                _k1_base.terms["tracking_ang_vel"],
+                params={"tracking_sigma": 0.1},
+            ),
+            "feet_phase": _replace(
+                _k1_base.terms["feet_phase"],
+                params={"swing_height": 0.065, "tracking_sigma": 0.008},
+            ),
+        },
+    )
 )
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]

@@ -99,10 +99,16 @@ k1_22dof_flash_sac = ExperimentConfig(
     # shuffle/march-in-place (confirmed across v1-v4 runs).
     # PPO actions are unbounded (Normal dist, no tanh); FlashSAC is tanh-bounded.
     # PPO hip_pitch output ≈3.4 → 3.4×0.25=0.85 rad. FlashSAC max is
-    # tanh=1.0 → multiplier×0.25. target_action_scale_rad=1.0 gives ±1.0 rad,
-    # covering PPO's observed 0.85-0.93 rad peaks.
+    # tanh=1.0 → multiplier×0.25.
+    # v13-v15 used target_action_scale_rad=1.0 (multiplier 4.0, max ±1.0 rad).
+    # Problem: to output 0.85 rad, policy needs tanh=0.85 → gradient=0.28
+    # (vanishing). v16: scale=2.0 (multiplier 8.0, max ±2.0 rad). Now
+    # 0.85 rad only needs tanh=0.425 → gradient=0.82 (3x better).
+    # Risk: multiplier 8.0 is at the lower edge of the 8-13x thrashing
+    # regime documented in the bridge regression test, but that was per-joint
+    # scaling — uniform 8x with torque clipping (45 Nm → 0.56 rad) is safe.
     algo=replace(algo.flash_sac, config=replace(
-        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
+        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=2.0,
     )),
     simulator=simulator.isaacsim,
     robot=_k1_flashsac_robot,
@@ -147,7 +153,7 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
     algo=replace(algo.flash_sac, config=replace(
-        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
+        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=2.0,
     )),
     simulator=simulator.mjwarp,
     robot=_k1_flashsac_robot,
