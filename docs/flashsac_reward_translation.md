@@ -175,7 +175,9 @@ bash scripts/run_flashsac_k1_holosoma_smoke.sh
 | 2 | `20260410_054053` | feet_phase 4→7, swing 0.09→0.065, action_rate→-0.001 | Marginal improvement, still shuffling. actor/loss=-3.04. |
 | 3 | `20260410_065007` | feet_phase 7→12, swing 0.065→0.04, tracking 2.0→**1.0** | **Worse** — marching in place. Halved tracking killed forward drive. |
 | 4 | `20260410_072839` | Restore tracking→2.0, feet_phase 12→10, keep swing 0.04 | **Still no walk.** Temperature=0.0004 in ALL v1-v4 runs. |
-| 5 | (pending) | **Algorithm fix:** temp_target_sigma 0.15→**0.25**, reward reverted to v2 | Root cause was temperature collapse, not reward. sigma=0.25 raises target_entropy from -10.53 to +0.74. |
+| 5 | `20260410_080903` | **Algorithm fix:** sigma 0.15→0.25, reward=v2 | Back to shuffle. sigma fix helped entropy (+0.49) but shuffle persists. |
+| 6 | `20260410_084759` | Upstream-aligned minimal reward (5 terms), sigma=0.25 | Still shuffle. entropy=+0.49, temp=0.0011. Reward is NOT the problem. |
+| 7 | (pending) | **Physics fix:** leg Kp 200→80, Kd 5→2.5 + upstream reward + sigma=0.25 | Root cause: Kp=200 saturates effort_limit=45Nm at ±0.225rad. Robot physically cannot stride. |
 
 ### Why K1 shuffles (FlashSAC-specific failure mode)
 
