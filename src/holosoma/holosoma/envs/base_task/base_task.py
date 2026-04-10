@@ -52,6 +52,7 @@ class BaseTask:
         curriculum_config = tyro_config.curriculum
         training_config = tyro_config.training
 
+        self.config = tyro_config
         self.training_config = training_config
         self.robot_config = robot_config
 
