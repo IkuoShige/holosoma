@@ -173,7 +173,8 @@ bash scripts/run_flashsac_k1_holosoma_smoke.sh
 |---|---|---|---|
 | 1 | `20260410_043117` | G1 v5 defaults (feet_phase=4.0, swing=0.09, action_rate=-0.005, tracking=2.0) | **Shuffle gait** — small rapid steps, no foot lifting. actor/loss=-2.24, temp→0.0004. |
 | 2 | `20260410_054053` | feet_phase 4→7, swing 0.09→0.065, action_rate→-0.001 | Marginal improvement, still shuffling. actor/loss=-3.04. |
-| 3 | (pending) | feet_phase 7→**12.0**, swing 0.065→**0.04**, tracking_lin_vel 2.0→**1.0** | Aggressive anti-shuffle: make foot-lifting the dominant reward term. |
+| 3 | `20260410_065007` | feet_phase 7→12.0, swing 0.065→0.04, tracking_lin_vel 2.0→**1.0** | **Worse** — stopped walking. Marching in place. Halved tracking killed forward drive. |
+| 4 | (pending) | Restore tracking_lin_vel→**2.0**, feet_phase 12→**10.0**, keep swing 0.04 + action_rate -0.001 | Balance: full forward drive + strong gait enforcement. |
 
 ### Why K1 shuffles (FlashSAC-specific failure mode)
 
