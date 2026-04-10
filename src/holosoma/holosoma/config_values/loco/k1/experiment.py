@@ -60,7 +60,13 @@ k1_22dof_fast_sac = ExperimentConfig(
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
-    algo=algo.flash_sac,
+    # K1 needs wider exploration than G1: no waist DOFs makes gait harder
+    # to discover. sigma 0.15→0.25 raises target_entropy from -10.53 to
+    # +0.74, preventing the early temperature collapse that locks into
+    # shuffle/march-in-place (confirmed across v1-v4 runs).
+    algo=replace(algo.flash_sac, config=replace(
+        algo.flash_sac.config, temp_target_sigma=0.25,
+    )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,
     terrain=terrain.terrain_locomotion_mix,
@@ -78,7 +84,9 @@ k1_22dof_flash_sac = ExperimentConfig(
 k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
-    algo=algo.flash_sac,
+    algo=replace(algo.flash_sac, config=replace(
+        algo.flash_sac.config, temp_target_sigma=0.25,
+    )),
     simulator=simulator.mjwarp,
     robot=robot.k1_22dof,
     terrain=terrain.terrain_locomotion_mix,

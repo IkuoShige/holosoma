@@ -199,15 +199,16 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 # of the v5 recipe — the head should stay stable during locomotion.
 #
 # K1-specific tuning history:
-#   v1 20260410_043117: G1 defaults → shuffle gait (small rapid steps).
+#   v1 20260410_043117: G1 defaults (sigma=0.15) → shuffle gait.
 #   v2 20260410_054053: feet_phase 7, swing 0.065, action_rate -0.001
 #       → marginal improvement, still shuffling.
-#   v3 20260410_065007: feet_phase 12, swing 0.04, tracking_lin_vel 1.0
-#       → stopped walking entirely. Foot-lifting reward dominated but
-#       halved tracking killed forward motivation → marching in place.
-#   v4 (current): restore tracking_lin_vel 2.0 (need forward drive),
-#       keep feet_phase 10.0 + swing 0.04 (strong gait enforcement),
-#       keep action_rate -0.001 (allow large movements).
+#   v3 20260410_065007: feet_phase 12, swing 0.04, tracking 1.0
+#       → stopped walking. Marching in place.
+#   v4 20260410_072839: tracking restored 2.0, feet_phase 10, swing 0.04
+#       → still no walk. Temperature collapses to 0.0004 in ALL runs.
+#   v5 (current): ROOT CAUSE was algorithm-level, not reward.
+#       temp_target_sigma raised 0.15→0.25 in experiment config.
+#       Reward reverted to v2 (best shuffle = at least walks forward).
 _k1_base = make_flashsac_reward(
     k1_22dof_loco,
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
@@ -216,20 +217,19 @@ _k1_base = make_flashsac_reward(
         "penalty_orientation": -1.0,
         "penalty_action_rate": -0.001,  # G1: -0.005. Allow larger movements.
         "pose": -0.2,
-        "feet_phase": 10.0,  # G1: 4.0. Strong gait enforcement for K1.
+        "feet_phase": 7.0,  # G1: 4.0. Stronger for K1 (no waist).
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
 )
-# Patch feet_phase swing_height: 0.04m forces feet off ground
-# without being unreachable for K1's shorter legs.
+# K1's shorter legs: swing_height 0.09→0.065 (achievable target).
 k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
         "feet_phase": _replace(
             _k1_base.terms["feet_phase"],
-            params={"swing_height": 0.04, "tracking_sigma": 0.008},
+            params={"swing_height": 0.065, "tracking_sigma": 0.008},
         ),
     },
 )
