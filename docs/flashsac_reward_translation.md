@@ -103,88 +103,102 @@ Root roll (left-right sway) is the primary remaining gap. Attempts to close it v
 from holosoma.config_values.loco.flashsac_transform import (
     make_flashsac_reward,
     make_flashsac_observation,
+    K1_UPPER_BODY_POSE_INDICES,
 )
 from holosoma.config_values.loco.k1.reward import k1_22dof_loco
 from holosoma.config_values.loco.k1.observation import k1_22dof_loco_single_wolinvel
 
-# Generate FlashSAC-compatible reward (drops alive, re-weights everything else)
-k1_flashsac_reward = make_flashsac_reward(k1_22dof_loco)
+# Generate FlashSAC-compatible reward
+# IMPORTANT: K1 has upper body FIRST (indices 0-9), unlike G1 (12-28).
+# You MUST pass K1_UPPER_BODY_POSE_INDICES explicitly.
+k1_flashsac_reward = make_flashsac_reward(
+    k1_22dof_loco,
+    upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
+)
 
 # Observation: PPO-default passthrough (no changes needed for v5 recipe)
 k1_flashsac_obs = make_flashsac_observation(k1_22dof_loco_single_wolinvel)
 ```
 
+### Joint order caveat
+
+The transform helper's `upper_body_pose_indices` parameter replaces the old `upper_body_start_idx` (which assumed legs always come first). Robot joint orders differ:
+
+| Robot | Joint order | Upper body indices |
+|---|---|---|
+| **G1 (29-DoF)** | legs (0-11) → upper body (12-28) | `G1_UPPER_BODY_POSE_INDICES = range(12, 29)` |
+| **K1 (22-DoF)** | upper body (0-9) → legs (10-21) | `K1_UPPER_BODY_POSE_INDICES = range(0, 10)` |
+
+Using the wrong indices will boost leg joints to 150 instead of upper body — the robot won't walk.
+
 The helper is validated by unit tests in `tests/unit/test_flashsac_transform.py` that verify:
 - G1 transform output matches the hand-tuned `g1_29dof_loco_flashsac` preset exactly
 - Only `alive` is dropped
 - K1 transform produces 9 terms with expected weights
-- Upper body pose_weights are set to 150
+- K1 upper body (indices 0-9) boosted to 150, legs (10-21) unchanged
+- K1 preset has K1-specific tuning (feet_phase=12.0, swing_height=0.04, etc.)
 - Transform is idempotent
 
-## K1 expansion roadmap
+## K1 expansion (completed 2026-04-10)
 
-### Prerequisites (done)
+### Implementation
 
 - [x] FlashSAC port complete (vendored + adapter + bridge)
 - [x] G1 canonical recipe established (v5, 1.44× composite)
-- [x] Translation helper validated on G1 ground truth
-- [x] Translation helper produces correct K1 output (unit test green)
+- [x] Fixed `flashsac_transform.py` API: `upper_body_start_idx` → `upper_body_pose_indices` to support K1's upper-body-first joint order
+- [x] Fixed false-positive K1 unit test (was checking leg indices 12+ instead of upper body 0-9)
+- [x] Updated K1 robot model from `booster_assets`
+- [x] Created `k1_22dof_loco_flashsac` reward preset with K1-specific tuning
+- [x] Created `k1_22dof_flash_sac` (IsaacSim) and `k1_22dof_flash_sac_mjwarp` (MJWarp) experiment configs
+- [x] Registered in base `experiment.py` and `reward.py`
+- [x] Smoke test: 5-step training completes (10.62 it/s)
+- [x] Full training runs completed, iterative tuning in progress
 
-### Steps to enable K1
+### K1 training commands
 
-1. **Create `k1_22dof_loco_flashsac` reward preset**
-   ```python
-   # In config_values/loco/k1/reward.py
-   from holosoma.config_values.loco.flashsac_transform import make_flashsac_reward
-   k1_22dof_loco_flashsac = make_flashsac_reward(k1_22dof_loco)
-   ```
-   Register in `config_values/reward.py` DEFAULTS dict.
+```bash
+# Full training (IsaacSim)
+python src/holosoma/holosoma/train_agent.py exp:k1-22dof-flash-sac
 
-2. **Create `k1_22dof_flash_sac` experiment**
-   ```python
-   # In config_values/loco/k1/experiment.py
-   k1_22dof_flash_sac = ExperimentConfig(
-       env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
-       training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
-       algo=algo.flash_sac,
-       simulator=simulator.isaacsim,
-       robot=robot.k1_22dof,
-       terrain=terrain.terrain_locomotion_mix,
-       observation=observation.k1_22dof_loco_single_wolinvel,  # PPO-default (has phase clock)
-       action=action.k1_22dof_joint_pos,
-       termination=termination.k1_22dof_termination,
-       randomization=randomization.k1_22dof_randomization,
-       command=command.k1_22dof_command,
-       curriculum=curriculum.k1_22dof_curriculum_fast_sac,
-       reward=reward.k1_22dof_loco_flashsac,
-   )
-   ```
-   Register in `config_values/experiment.py` DEFAULTS dict.
+# Full training (MJWarp)
+python src/holosoma/holosoma/train_agent.py exp:k1-22dof-flash-sac-mjwarp
 
-3. **Unit smoke test** — verify the experiment config resolves without error and the observation/reward dimensions are self-consistent.
+# Smoke test (5 steps)
+bash scripts/run_flashsac_k1_holosoma_smoke.sh
+```
 
-4. **5-step e2e smoke** — run for 5 interaction steps to catch shape mismatches:
-   ```bash
-   python src/holosoma/holosoma/train_agent.py exp:k1-22dof-flash-sac \
-     --training.num-envs=64 \
-     --algo.config.num-learning-iterations=5 \
-     --training.headless=True
-   ```
+### K1 tuning history
 
-5. **Full training** (~45 min on RTX 5090):
-   ```bash
-   python src/holosoma/holosoma/train_agent.py exp:k1-22dof-flash-sac \
-     --training.num-envs=1024 \
-     --algo.config.num-learning-iterations=48829 \
-     --training.headless=True
-   ```
+| # | Run | Change | Observation |
+|---|---|---|---|
+| 1 | `20260410_043117` | G1 v5 defaults (feet_phase=4.0, swing=0.09, action_rate=-0.005, tracking=2.0) | **Shuffle gait** — small rapid steps, no foot lifting. actor/loss=-2.24, temp→0.0004. |
+| 2 | `20260410_054053` | feet_phase 4→7, swing 0.09→0.065, action_rate→-0.001 | Marginal improvement, still shuffling. actor/loss=-3.04. |
+| 3 | (pending) | feet_phase 7→**12.0**, swing 0.065→**0.04**, tracking_lin_vel 2.0→**1.0** | Aggressive anti-shuffle: make foot-lifting the dominant reward term. |
 
-6. **Quantitative eval** — record trajectory NPZ and compare against K1 PPO baseline using the same `compare_eval.py` methodology used for G1. Target: composite ≤1.5×.
+### Why K1 shuffles (FlashSAC-specific failure mode)
 
-7. **If K1 composite > 2.0×** — the translation may need K1-specific weight tuning. Start from the G1 v5 recipe and adjust the term that shows the largest per-metric gap (same iterative approach as G1 runs #10-#17).
+FlashSAC's `temp_target_sigma=0.15` causes **early temperature collapse** (α → 0.0004 within ~3k steps). The policy locks into the first local optimum it discovers.
 
-### Expected K1 differences from G1
+For K1, the easiest early optimum is **shuffle**: rapid small foot vibrations track `tracking_lin_vel` somewhat without risking termination. PPO avoids this because its high-entropy policy (`init_noise_std=0.8`) keeps exploring and eventually discovers proper gait. FlashSAC's narrow policy cannot.
 
-- **22-DoF** (vs 29): target_entropy = -10.51 (vs -13.86). Narrower action space → faster convergence but also faster collapse if reward is wrong.
-- **Different joint layout**: K1 has 10 upper body DoFs + 12 leg DoFs. G1 has 17 upper body + 12 leg. Upper body constraint may need different `upper_body_start_idx` — verify the K1 pose_weights ordering in `k1_22dof_loco`.
-- **Different dynamics**: K1 is a different robot — gait frequency, COM height, foot clearance all differ. The reward WEIGHTS should transfer (same transform), but the reward PARAMETERS (e.g., `swing_height=0.09` in feet_phase, `close_feet_threshold=0.15`) may need K1-specific values — check what `k1_22dof_loco` already uses and preserve those.
+K1 is especially vulnerable because it lacks waist DOFs (0 vs G1's 3). G1 can use torso rotation for stride length; K1 must rely entirely on leg swing, making proper gait harder to discover.
+
+**Strategy**: Make foot-lifting the dominant reward from step 1, so the first local optimum the policy finds IS proper gait:
+
+| Parameter | G1 v5 | K1 v3 | Rationale |
+|---|---|---|---|
+| `feet_phase` weight | 4.0 | **12.0** | 3× G1. Must dominate over tracking to prevent shuffle. |
+| `swing_height` | 0.09 | **0.04** | K1 shorter legs. Low target that demands feet off ground. |
+| `tracking_lin_vel` | 2.0 | **1.0** | Halved. Reduces incentive to chase velocity via shuffle. |
+| `penalty_action_rate` | -0.005 | **-0.001** | 5× weaker. Allow large joint movements for real steps. |
+
+### K1 vs G1 morphology differences
+
+| Aspect | G1 (29-DoF) | K1 (22-DoF) | Impact on FlashSAC |
+|---|---|---|---|
+| Waist DOFs | 3 (yaw, roll, pitch) | **0** | K1 can't use torso rotation → shuffle is easier than stepping |
+| Head DOFs | 0 | 2 (yaw, pitch) | Head pose_weights boosted to 150 (keep head stable) |
+| Arm DOFs per arm | 7 (incl. wrist) | 4 (no wrist) | Less upper body inertia for K1 |
+| Joint order | legs first (0-11) | **upper body first (0-9)** | Must use `K1_UPPER_BODY_POSE_INDICES` |
+| action_scale | 0.25 | 0.25 | Same → FlashSACGymBridge multiplier=2.0 identical |
+| target_entropy | -13.86 | -10.51 | K1 collapses faster (fewer DOFs) |
