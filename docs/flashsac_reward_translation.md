@@ -180,7 +180,12 @@ bash scripts/run_flashsac_k1_holosoma_smoke.sh
 | 7 | `20260410_094504` | **Physics fix:** leg Kp 200→80, Kd 5→2.5 | No visible change (PD alone insufficient). |
 | 8 | `20260410_103035` | G1 v5 9-term reward, G1 obs scales, friction [0.5,1.25] | Improvement. Walking but step pitch too fast. |
 | 9 | `20260410_111104` | gait_period 1.0→1.2s with ±0.2 randomization | **Eval: fwd=0.266m/s (53%), L-leg 0.78Hz (good), R-leg 5.86Hz (vibration). L-R asymmetry.** |
-| 10 | (pending) | penalty_action_rate -0.005→**-0.05** | Suppress R-leg 5.86Hz vibration. FlashSAC lacks PPO's symmetry loss. |
+| 10 | `20260410_125717` | action_rate -0.05 + **symmetry augmentation** | **L-R asymmetry FIXED** (both 0.78Hz). fwd=0.29m/s. |
+| 11 | `20260410_142039` | Revert action_rate→-0.005, keep symmetry | fwd=0.354, hip amp 0.12rad. Small steps still. |
+| 12 | `20260410_151814` | tracking_sigma 0.25→0.1 | fwd=**0.429** (86%), lateral 0.075. Hip amp unchanged. |
+| 13 | `20260410_163529` | **target_action_scale_rad 0.5→1.0** (multiplier 2→4) | **Hip amp 0.30rad (17°)**, 2.3x improvement. PPO is tanh-unbounded; FlashSAC tanh-bounded. |
+| 14 | `20260410_172355` | Restore stock Kp=200 (Codex suggestion) | **Worse**: hip amp 0.14rad. Kp=200 too stiff for FlashSAC. |
+| 15 | — | Revert to v13 config (Kp=80 + scale=1.0) = **best config** | Hip 0.30rad, fwd 0.35m/s, symmetric, lateral 0.04m/s. |
 
 ### Why K1 shuffles (FlashSAC-specific failure mode)
 
@@ -192,13 +197,19 @@ K1 is especially vulnerable because it lacks waist DOFs (0 vs G1's 3). G1 can us
 
 **Strategy**: Make foot-lifting the dominant reward from step 1, so the first local optimum the policy finds IS proper gait:
 
-| Parameter | G1 v5 | K1 v5 | Rationale |
+| Parameter | G1 v5 | K1 v15 (best) | Rationale |
 |---|---|---|---|
-| `temp_target_sigma` | 0.15 | **0.25** | K1 needs wider exploration (no waist DOFs). Prevents temperature collapse. |
-| `feet_phase` weight | 4.0 | **7.0** | Stronger gait enforcement for K1. |
+| `temp_target_sigma` | 0.15 | **0.25** | K1 needs wider exploration (no waist DOFs). |
+| `target_action_scale_rad` | 0.5 | **1.0** | PPO is tanh-unbounded (actions up to 3.4). FlashSAC tanh-bounded needs 4x multiplier. |
+| `Kp` (hip/knee) | stock (40) | **80** (stock 200 reduced) | Compliant PD lets policy output large actions safely. |
+| `tracking_sigma` | 0.25 | **0.1** | Sharper velocity tracking pressure. |
+| `feet_phase` weight | 4.0 | **4.0** | G1 v5 recipe. |
 | `swing_height` | 0.09 | **0.065** | K1 shorter legs. |
-| `penalty_action_rate` | -0.005 | **-0.001** | 5× weaker. Allow large joint movements. |
-| `tracking_lin_vel` | 2.0 | **2.0** | Keep full weight (halving killed forward drive in v3). |
+| `penalty_action_rate` | -0.005 | **-0.005** | G1 value. Symmetry augmentation handles vibration. |
+| symmetry augmentation | N/A | **enabled** | Batch-level mirroring via SymmetryUtils. PPO has use_symmetry=True. |
+| `gait_period` | 1.0 | **1.2** + ±0.2 rand | K1 shorter legs, slower natural cadence. |
+| friction range | [0.5, 1.25] | **[0.5, 1.25]** | G1-matched (stock K1 was [0.1, 1.0]). |
+| obs scales | G1 defaults | **G1-matched** | base_ang_vel=0.25, dof_vel=0.05. |
 
 ### K1 vs G1 morphology differences
 
