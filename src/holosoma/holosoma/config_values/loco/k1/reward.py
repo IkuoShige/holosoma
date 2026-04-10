@@ -221,9 +221,12 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 #   v10 20260410_125717: action_rate -0.05 + symmetry augmentation
 #       → L-R asymmetry FIXED (both legs 0.78Hz). fwd=0.29m/s.
 #       But hip amplitude still small (0.15rad vs 0.56rad available).
-#   v11 (current): revert action_rate to -0.005 (G1 value). The
-#       symmetry augmentation fixed R-leg vibration; the 10x action_rate
-#       penalty is no longer needed and suppresses stride amplitude.
+#   v11 20260410_142039: action_rate reverted to -0.005. Symmetry
+#       holds. fwd=0.354m/s (+22%). But hip amp still 0.12rad (small).
+#       Policy uses knee/ankle instead of hip swing.
+#   v12 (current): tighten tracking_sigma 0.25→0.1 to demand closer
+#       velocity tracking. At sigma=0.25, 0.354m/s already gives 91%
+#       reward. sigma=0.1 makes that only 81% → policy must stride more.
 _k1_base = make_flashsac_reward(
     k1_22dof_loco,
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
@@ -238,10 +241,19 @@ _k1_base = make_flashsac_reward(
     },
 )
 # K1's shorter legs: swing_height 0.09→0.065.
+# Tighten tracking_sigma 0.25→0.1 for sharper velocity tracking.
 k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
+        "tracking_lin_vel": _replace(
+            _k1_base.terms["tracking_lin_vel"],
+            params={"tracking_sigma": 0.1},
+        ),
+        "tracking_ang_vel": _replace(
+            _k1_base.terms["tracking_ang_vel"],
+            params={"tracking_sigma": 0.1},
+        ),
         "feet_phase": _replace(
             _k1_base.terms["feet_phase"],
             params={"swing_height": 0.065, "tracking_sigma": 0.008},
