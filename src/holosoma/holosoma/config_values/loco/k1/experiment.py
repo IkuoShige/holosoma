@@ -65,13 +65,30 @@ k1_22dof_fast_sac = ExperimentConfig(
 # 45/80=0.5625 rad, enough for real steps. Damping halved to match.
 # PPO uses the stock gains and compensates via high-entropy exploration;
 # FlashSAC's narrow policy cannot, so we must fix the physics.
-# v7-v13: Kp=80 was wrong direction. The fix for FlashSAC was raising
-# target_action_scale_rad (v13), not lowering Kp. With scale=1.0,
-# FlashSAC can command ±1.0 rad offsets. Stock Kp=200 gives maximum
-# torque (45Nm) at error>0.225 rad — exactly the regime for large hip
-# swing. Kp=80 produced less torque (33.6Nm at 0.42rad error).
-# Restore stock PD gains. Let Codex-verified accumulation mechanism work.
-_k1_flashsac_robot = robot.k1_22dof
+# PD gains: Kp=80 (reduced from stock 200) is better for FlashSAC.
+# v13(Kp=80): hip amp 0.30rad. v14(Kp=200): hip amp 0.14rad (worse).
+# Kp=80 is more compliant → policy can output larger actions safely.
+# Kp=200 makes PD too stiff → policy learns cautious small actions.
+_k1_flashsac_robot = replace(
+    robot.k1_22dof,
+    control=replace(
+        robot.k1_22dof.control,
+        stiffness={
+            "Head_yaw": 5.0, "Head_pitch": 5.0,
+            "Hip_Yaw": 80.0, "Hip_Roll": 80.0, "Hip_Pitch": 80.0,
+            "Knee": 80.0, "Ankle_Pitch": 40.0, "Ankle_Roll": 40.0,
+            "Shoulder_Pitch": 20.0, "Shoulder_Roll": 20.0,
+            "Elbow_Pitch": 20.0, "Elbow_Yaw": 20.0,
+        },
+        damping={
+            "Head_yaw": 0.5, "Head_pitch": 0.5,
+            "Hip_Yaw": 2.5, "Hip_Roll": 2.5, "Hip_Pitch": 2.5,
+            "Knee": 2.5, "Ankle_Pitch": 1.5, "Ankle_Roll": 1.5,
+            "Shoulder_Pitch": 0.5, "Shoulder_Roll": 0.5,
+            "Elbow_Pitch": 0.5, "Elbow_Yaw": 0.5,
+        },
+    ),
+)
 
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
