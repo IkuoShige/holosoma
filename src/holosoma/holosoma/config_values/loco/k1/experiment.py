@@ -130,7 +130,21 @@ k1_22dof_flash_sac = ExperimentConfig(
             ),
         },
     ),
-    command=command.k1_22dof_command,
+    # Slower gait clock for K1's shorter legs (0.49m vs G1 0.76m).
+    # gait_period 1.0→1.2s with randomization (G1-matched).
+    command=replace(
+        command.k1_22dof_command,
+        setup_terms={
+            **command.k1_22dof_command.setup_terms,
+            "locomotion_gait": replace(
+                command.k1_22dof_command.setup_terms["locomotion_gait"],
+                params={
+                    "gait_period": 1.2,
+                    "gait_period_randomization_width": 0.2,
+                },
+            ),
+        },
+    ),
     curriculum=curriculum.k1_22dof_curriculum_fast_sac,
     reward=reward.k1_22dof_loco_flashsac,
 )
@@ -157,7 +171,19 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
             ),
         },
     ),
-    command=command.k1_22dof_command,
+    command=replace(
+        command.k1_22dof_command,
+        setup_terms={
+            **command.k1_22dof_command.setup_terms,
+            "locomotion_gait": replace(
+                command.k1_22dof_command.setup_terms["locomotion_gait"],
+                params={
+                    "gait_period": 1.2,
+                    "gait_period_randomization_width": 0.2,
+                },
+            ),
+        },
+    ),
     curriculum=curriculum.k1_22dof_curriculum_fast_sac,
     reward=reward.k1_22dof_loco_flashsac,
 )
