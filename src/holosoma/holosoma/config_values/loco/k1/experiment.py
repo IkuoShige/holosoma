@@ -118,7 +118,18 @@ k1_22dof_flash_sac = ExperimentConfig(
     observation=observation.k1_22dof_loco_single_wolinvel,
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
-    randomization=randomization.k1_22dof_randomization,
+    # FlashSAC-specific: softer friction range [0.5, 1.25] (G1-matched).
+    # Stock K1 uses [0.1, 1.0] which biases toward conservative shuffle.
+    randomization=replace(
+        randomization.k1_22dof_randomization,
+        setup_terms={
+            **randomization.k1_22dof_randomization.setup_terms,
+            "randomize_friction_startup": replace(
+                randomization.k1_22dof_randomization.setup_terms["randomize_friction_startup"],
+                params={"friction_range": [0.5, 1.25], "enabled": True},
+            ),
+        },
+    ),
     command=command.k1_22dof_command,
     curriculum=curriculum.k1_22dof_curriculum_fast_sac,
     reward=reward.k1_22dof_loco_flashsac,
@@ -136,7 +147,16 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     observation=observation.k1_22dof_loco_single_wolinvel,
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
-    randomization=randomization.k1_22dof_randomization,
+    randomization=replace(
+        randomization.k1_22dof_randomization,
+        setup_terms={
+            **randomization.k1_22dof_randomization.setup_terms,
+            "randomize_friction_startup": replace(
+                randomization.k1_22dof_randomization.setup_terms["randomize_friction_startup"],
+                params={"friction_range": [0.5, 1.25], "enabled": True},
+            ),
+        },
+    ),
     command=command.k1_22dof_command,
     curriculum=curriculum.k1_22dof_curriculum_fast_sac,
     reward=reward.k1_22dof_loco_flashsac,

@@ -11,7 +11,7 @@ k1_22dof_loco_single_wolinvel = ObservationManagerCfg(
             terms={
                 "base_ang_vel": ObsTermCfg(
                     func="holosoma.managers.observation.terms.locomotion:base_ang_vel",
-                    scale=1.0,
+                    scale=0.25,  # G1-matched (was 1.0)
                     noise=0.0,
                 ),
                 "projected_gravity": ObsTermCfg(
@@ -36,7 +36,7 @@ k1_22dof_loco_single_wolinvel = ObservationManagerCfg(
                 ),
                 "dof_vel": ObsTermCfg(
                     func="holosoma.managers.observation.terms.locomotion:dof_vel",
-                    scale=0.1,
+                    scale=0.05,  # G1-matched (was 0.1)
                     noise=0.1,
                 ),
                 "actions": ObsTermCfg(
@@ -63,12 +63,12 @@ k1_22dof_loco_single_wolinvel = ObservationManagerCfg(
             terms={
                 "base_lin_vel": ObsTermCfg(
                     func="holosoma.managers.observation.terms.locomotion:base_lin_vel",
-                    scale=1.0,
+                    scale=2.0,  # G1-matched (was 1.0)
                     noise=0.0,
                 ),
                 "base_ang_vel": ObsTermCfg(
                     func="holosoma.managers.observation.terms.locomotion:base_ang_vel",
-                    scale=1.0,
+                    scale=0.25,  # G1-matched (was 1.0)
                     noise=0.0,
                 ),
                 "projected_gravity": ObsTermCfg(
@@ -93,7 +93,7 @@ k1_22dof_loco_single_wolinvel = ObservationManagerCfg(
                 ),
                 "dof_vel": ObsTermCfg(
                     func="holosoma.managers.observation.terms.locomotion:dof_vel",
-                    scale=0.1,
+                    scale=0.05,  # G1-matched (was 0.1)
                     noise=0.0,
                 ),
                 "actions": ObsTermCfg(
