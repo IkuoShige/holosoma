@@ -116,9 +116,10 @@ def test_k1_flashsac_preset_has_k1_tuned_values() -> None:
     from holosoma.config_values.loco.k1.reward import k1_22dof_loco_flashsac
 
     # K1-tuned values that differ from G1 defaults
-    assert k1_22dof_loco_flashsac.terms["feet_phase"].weight == 7.0
-    assert k1_22dof_loco_flashsac.terms["feet_phase"].params["swing_height"] == 0.065
+    assert k1_22dof_loco_flashsac.terms["feet_phase"].weight == 12.0
+    assert k1_22dof_loco_flashsac.terms["feet_phase"].params["swing_height"] == 0.04
     assert k1_22dof_loco_flashsac.terms["penalty_action_rate"].weight == -0.001
+    assert k1_22dof_loco_flashsac.terms["tracking_lin_vel"].weight == 1.0
     # Shared v5 values
     assert k1_22dof_loco_flashsac.terms["pose"].weight == -0.2
     assert "alive" not in k1_22dof_loco_flashsac.terms
