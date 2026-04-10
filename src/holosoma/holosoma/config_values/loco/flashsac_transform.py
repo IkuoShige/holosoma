@@ -3,32 +3,16 @@
 FlashSAC uses a narrow deterministic policy (``temp_target_sigma=0.15``, target
 entropy ≈ ``0.5 * d * log(2πe * 0.15²)`` which is strongly negative for typical
 humanoid action dims). This means the policy commits early and cannot escape
-local optima created by strong shaping terms.
+local optima created by strong shaping terms at full PPO weight.
 
-Holosoma's PPO-default locomotion reward contains several terms that create
-**zero-action attractors** for FlashSAC's narrow policy:
+The canonical translation (validated on G1 across 16 training runs to a
+composite PPO-divergence score of 1.44×) keeps **all PPO reward terms except
+``alive``** but re-weights them to stay below FlashSAC's collapse threshold.
+The observation uses the **PPO-default** preset unchanged (including
+``sin_phase`` / ``cos_phase`` which couple to the retained ``feet_phase``).
 
-- ``alive`` (+1.0/step): constant reward for surviving → standing still is safe
-- ``feet_phase`` (high weight, tight sigma): narrow policy matches the phase
-  clock with micro-oscillation, exploiting +36 ep_sum without forward progress
-- ``pose`` (upper-body weight 50): strongly penalises deviations from default
-  joint angles → the policy locks the torso
-- ``penalty_action_rate`` (-2.0): punishes movement harder than exploration
-  can overcome
-- ``penalty_feet_ori``, ``penalty_close_feet_xy``: additional penalties that
-  reinforce "don't move"
-
-This module provides ``make_flashsac_reward`` and ``make_flashsac_observation``
-which mechanically apply the empirically-validated transformation that was
-hand-tuned on G1 (runs ``20260408_142832`` / ``20260408_154733``, walking at
-~0.28 m/s forward). The transforms are designed to be **robot-agnostic** so
-they can be applied to K1, T1, or any future holosoma humanoid without
-per-robot trial-and-error.
-
-Empirical evidence (9 G1 training runs):
-- Runs #6/#7 (stripped preset): walks at 0.28 m/s, σ=0.15 ✓
-- Run #8 (σ=0.30 on stripped): no gait improvement → σ is NOT the bottleneck
-- Run #9 (Option A: PPO-default reward + σ=0.15): collapsed to mean_action≈0
+See ``docs/flashsac_reward_translation.md`` for the full empirical rationale,
+per-term tuning history, and K1 expansion roadmap.
 """
 
 from __future__ import annotations
@@ -39,39 +23,55 @@ from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg
 from holosoma.config_types.reward import RewardManagerCfg, RewardTermCfg
 
 # -------------------------------------------------------------------
-# Default configuration — empirically validated on G1 runs #6/#7.
+# Canonical v5 recipe — validated on G1 run 20260409_153439
+# (composite 1.44× vs PPO, pitch 1.1×, height 1.1×, upper body 1.6×).
 # -------------------------------------------------------------------
 
-#: Reward terms that create zero-action attractors for FlashSAC.
-DEFAULT_DROP_TERMS: frozenset[str] = frozenset({
-    "alive",
-    "feet_phase",
-    "pose",
-    "penalty_feet_ori",
-    "penalty_close_feet_xy",
-})
+#: The only term to DROP entirely. ``alive`` creates a lazy-attractor
+#: (constant +1/step for standing still) that FlashSAC exploits even at
+#: reduced weight. Empirically confirmed at run #9 (Option A).
+DEFAULT_DROP_TERMS: frozenset[str] = frozenset({"alive"})
 
-#: Penalty weights to weaken so exploration is not punished.
-#: Mapping from term name → new weight.
-DEFAULT_WEAKEN_WEIGHTS: dict[str, float] = {
-    "penalty_ang_vel_xy": -0.05,     # PPO default: -1.0   (20× weaker)
-    "penalty_orientation": -1.0,      # PPO default: -10.0  (10× weaker)
-    "penalty_action_rate": -0.005,    # PPO default: -2.0   (400× weaker)
+#: Per-term weight overrides. Each term is kept but at a weight tuned to
+#: stay below FlashSAC's zero-action collapse threshold while providing
+#: enough gradient to shape a PPO-like gait.
+#:
+#: Tuning history (G1, 16 runs):
+#:   penalty_ang_vel_xy:  -0.3 worsened pitch (1.63×); -0.05 is the sweet spot.
+#:   penalty_orientation: -3.0 worsened composite (2.48×); -1.0 is the sweet spot.
+#:   penalty_action_rate: PPO -2.0 is 400× too strong; -0.005 works.
+#:   pose:                -0.5 (full PPO) collapses; -0.2 with ub_weights=150 works.
+#:   feet_phase:          0.5 too weak for backward gait with stiff upper body;
+#:                        4.0 (80% PPO) is the sweet spot.
+#:   penalty_feet_ori:    -0.5 (10× weaker) works.
+#:   penalty_close_feet_xy: -1.0 (10× weaker) works.
+DEFAULT_WEIGHT_OVERRIDES: dict[str, float] = {
+    "penalty_ang_vel_xy": -0.05,
+    "penalty_orientation": -1.0,
+    "penalty_action_rate": -0.005,
+    "pose": -0.2,
+    "feet_phase": 4.0,
+    "penalty_feet_ori": -0.5,
+    "penalty_close_feet_xy": -1.0,
 }
 
-#: Observation terms to drop (clock signals that only couple to feet_phase).
-DEFAULT_DROP_OBS_TERMS: frozenset[str] = frozenset({
-    "sin_phase",
-    "cos_phase",
-})
+#: Upper-body pose_weights multiplier. PPO uses 50 for upper body joints;
+#: FlashSAC needs 150 (3×) to compensate for the 2.5× weaker outer pose weight.
+#: Effective penalty: -0.2 × 150 = -30 (PPO: -0.5 × 50 = -25, ~120%).
+DEFAULT_UPPER_BODY_POSE_WEIGHT: float = 150.0
+
+#: Index at which upper-body joints start in the pose_weights list.
+#: For both G1 (29-DoF) and K1 (22-DoF): left leg (6) + right leg (6) = 12.
+UPPER_BODY_START_IDX: int = 12
 
 
 def make_flashsac_reward(
     source: RewardManagerCfg,
     *,
     drop_terms: frozenset[str] = DEFAULT_DROP_TERMS,
-    weaken_weights: dict[str, float] = DEFAULT_WEAKEN_WEIGHTS,
-    strip_curriculum_tags: bool = True,
+    weight_overrides: dict[str, float] = DEFAULT_WEIGHT_OVERRIDES,
+    upper_body_pose_weight: float = DEFAULT_UPPER_BODY_POSE_WEIGHT,
+    upper_body_start_idx: int = UPPER_BODY_START_IDX,
 ) -> RewardManagerCfg:
     """Derive a FlashSAC-compatible reward from a PPO/FastSAC locomotion preset.
 
@@ -80,48 +80,40 @@ def make_flashsac_reward(
     source:
         The PPO-default ``RewardManagerCfg`` (e.g. ``g1_29dof_loco``).
     drop_terms:
-        Term names to remove entirely.
-    weaken_weights:
-        Term names to keep but with reduced weight.
-    strip_curriculum_tags:
-        If True, remove ``tags`` from surviving penalty terms. FlashSAC's
-        curriculum interaction is through the ``fast_sac`` curriculum which
-        starts at 0.5, so curriculum tags on already-weakened penalties are
-        unnecessary and may cause subtle scaling issues.
+        Term names to remove entirely (default: only ``alive``).
+    weight_overrides:
+        Term name → new weight. Terms not listed here keep their PPO weight.
+    upper_body_pose_weight:
+        Replacement pose_weight value for upper-body joints (index >=
+        ``upper_body_start_idx``). Set to 0 to skip pose_weights patching.
+    upper_body_start_idx:
+        First index in ``pose_weights`` that is an upper-body joint.
     """
     new_terms: dict[str, RewardTermCfg] = {}
     for name, term in source.terms.items():
         if name in drop_terms:
             continue
-        if name in weaken_weights:
-            term = replace(term, weight=weaken_weights[name])
-            if strip_curriculum_tags:
-                term = replace(term, tags=[])
+        if name in weight_overrides:
+            term = replace(term, weight=weight_overrides[name])
+        # Patch upper-body pose_weights if this is the ``pose`` term.
+        if name == "pose" and upper_body_pose_weight > 0:
+            pw = list(term.params.get("pose_weights", []))
+            if pw:
+                for i in range(upper_body_start_idx, len(pw)):
+                    pw[i] = upper_body_pose_weight
+                term = replace(term, params={**term.params, "pose_weights": pw})
         new_terms[name] = term
     return replace(source, terms=new_terms)
 
 
 def make_flashsac_observation(
     source: ObservationManagerCfg,
-    *,
-    drop_obs_terms: frozenset[str] = DEFAULT_DROP_OBS_TERMS,
 ) -> ObservationManagerCfg:
-    """Derive a FlashSAC-compatible observation from a PPO/FastSAC observation preset.
+    """Return the PPO-default observation unchanged.
 
-    Removes the phase-clock terms (``sin_phase``, ``cos_phase``) from both
-    ``actor_obs`` and ``critic_obs`` groups. These are only meaningful when
-    coupled to ``feet_phase`` in the reward; without that coupling they add
-    noise and a degenerate "match clock in place" attractor.
-
-    All other terms (including ``base_lin_vel`` in the critic group) are
-    preserved unchanged.
+    The canonical v5 recipe retains ``feet_phase`` in the reward, so the
+    ``sin_phase`` / ``cos_phase`` clock terms must remain in the observation.
+    No observation transform is needed — this function exists as a no-op
+    placeholder so the interface stays symmetric with ``make_flashsac_reward``.
     """
-    new_groups: dict[str, ObsGroupCfg] = {}
-    for group_name, group in source.groups.items():
-        new_terms = {
-            name: term
-            for name, term in group.terms.items()
-            if name not in drop_obs_terms
-        }
-        new_groups[group_name] = replace(group, terms=new_terms)
-    return replace(source, groups=new_groups)
+    return source
