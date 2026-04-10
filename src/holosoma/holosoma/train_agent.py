@@ -158,6 +158,10 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         # have to import torch after isaacgym
         import torch  # noqa: F401
         import torch.distributed as dist
+
+        # Use TF32 Tensor Cores for float32 matmuls (Ampere+).
+        # ~2-3x faster with negligible precision loss for RL training.
+        torch.set_float32_matmul_precision("high")
         import wandb
 
         from holosoma.agents.base_algo.base_algo import BaseAlgo
