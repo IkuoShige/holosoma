@@ -177,7 +177,10 @@ bash scripts/run_flashsac_k1_holosoma_smoke.sh
 | 4 | `20260410_072839` | Restore tracking→2.0, feet_phase 12→10, keep swing 0.04 | **Still no walk.** Temperature=0.0004 in ALL v1-v4 runs. |
 | 5 | `20260410_080903` | **Algorithm fix:** sigma 0.15→0.25, reward=v2 | Back to shuffle. sigma fix helped entropy (+0.49) but shuffle persists. |
 | 6 | `20260410_084759` | Upstream-aligned minimal reward (5 terms), sigma=0.25 | Still shuffle. entropy=+0.49, temp=0.0011. Reward is NOT the problem. |
-| 7 | (pending) | **Physics fix:** leg Kp 200→80, Kd 5→2.5 + upstream reward + sigma=0.25 | Root cause: Kp=200 saturates effort_limit=45Nm at ±0.225rad. Robot physically cannot stride. |
+| 7 | `20260410_094504` | **Physics fix:** leg Kp 200→80, Kd 5→2.5 | No visible change (PD alone insufficient). |
+| 8 | `20260410_103035` | G1 v5 9-term reward, G1 obs scales, friction [0.5,1.25] | Improvement. Walking but step pitch too fast. |
+| 9 | `20260410_111104` | gait_period 1.0→1.2s with ±0.2 randomization | **Eval: fwd=0.266m/s (53%), L-leg 0.78Hz (good), R-leg 5.86Hz (vibration). L-R asymmetry.** |
+| 10 | (pending) | penalty_action_rate -0.005→**-0.05** | Suppress R-leg 5.86Hz vibration. FlashSAC lacks PPO's symmetry loss. |
 
 ### Why K1 shuffles (FlashSAC-specific failure mode)
 
