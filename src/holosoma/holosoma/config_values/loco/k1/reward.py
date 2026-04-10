@@ -1,6 +1,10 @@
 """Locomotion reward presets for the K1 robot."""
 
 from holosoma.config_types.reward import RewardManagerCfg, RewardTermCfg
+from holosoma.config_values.loco.flashsac_transform import (
+    K1_UPPER_BODY_POSE_INDICES,
+    make_flashsac_reward,
+)
 
 k1_22dof_loco = RewardManagerCfg(
     only_positive_rewards=False,
@@ -182,4 +186,18 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
     },
 )
 
-__all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac"]
+# FlashSAC reward derived from K1 PPO preset via canonical v5 recipe.
+#
+# K1 joint order: upper body (indices 0-9) FIRST, then legs (10-21).
+# This differs from G1 (legs first, upper body at 12-28), so we pass
+# ``K1_UPPER_BODY_POSE_INDICES`` explicitly.
+#
+# Head joints (AAHead_yaw, Head_pitch) are boosted to 150 along with
+# arm joints. G1 has no head DOFs so this is a deliberate K1 extension
+# of the v5 recipe — the head should stay stable during locomotion.
+k1_22dof_loco_flashsac = make_flashsac_reward(
+    k1_22dof_loco,
+    upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
+)
+
+__all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]

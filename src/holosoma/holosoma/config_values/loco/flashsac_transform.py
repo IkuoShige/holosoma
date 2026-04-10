@@ -17,6 +17,7 @@ per-term tuning history, and K1 expansion roadmap.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 
 from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg
@@ -60,9 +61,18 @@ DEFAULT_WEIGHT_OVERRIDES: dict[str, float] = {
 #: Effective penalty: -0.2 × 150 = -30 (PPO: -0.5 × 50 = -25, ~120%).
 DEFAULT_UPPER_BODY_POSE_WEIGHT: float = 150.0
 
-#: Index at which upper-body joints start in the pose_weights list.
-#: For both G1 (29-DoF) and K1 (22-DoF): left leg (6) + right leg (6) = 12.
-UPPER_BODY_START_IDX: int = 12
+#: Indices of upper-body joints in the pose_weights list.
+#:
+#: **G1 (29-DoF)**: legs first → upper body at indices 12-28.
+#: **K1 (22-DoF)**: upper body first → indices 0-9.
+#:
+#: The default covers the G1 layout.  Pass ``K1_UPPER_BODY_POSE_INDICES``
+#: explicitly when transforming K1 rewards.
+G1_UPPER_BODY_POSE_INDICES: tuple[int, ...] = tuple(range(12, 29))
+K1_UPPER_BODY_POSE_INDICES: tuple[int, ...] = tuple(range(0, 10))
+
+# Backwards-compat alias used by the default argument.
+DEFAULT_UPPER_BODY_POSE_INDICES: Sequence[int] = G1_UPPER_BODY_POSE_INDICES
 
 
 def make_flashsac_reward(
@@ -71,7 +81,7 @@ def make_flashsac_reward(
     drop_terms: frozenset[str] = DEFAULT_DROP_TERMS,
     weight_overrides: dict[str, float] = DEFAULT_WEIGHT_OVERRIDES,
     upper_body_pose_weight: float = DEFAULT_UPPER_BODY_POSE_WEIGHT,
-    upper_body_start_idx: int = UPPER_BODY_START_IDX,
+    upper_body_pose_indices: Sequence[int] | None = None,
 ) -> RewardManagerCfg:
     """Derive a FlashSAC-compatible reward from a PPO/FastSAC locomotion preset.
 
@@ -84,11 +94,15 @@ def make_flashsac_reward(
     weight_overrides:
         Term name → new weight. Terms not listed here keep their PPO weight.
     upper_body_pose_weight:
-        Replacement pose_weight value for upper-body joints (index >=
-        ``upper_body_start_idx``). Set to 0 to skip pose_weights patching.
-    upper_body_start_idx:
-        First index in ``pose_weights`` that is an upper-body joint.
+        Replacement pose_weight value for upper-body joints at
+        ``upper_body_pose_indices``. Set to 0 to skip pose_weights patching.
+    upper_body_pose_indices:
+        Indices into ``pose_weights`` that are upper-body joints.
+        Defaults to ``G1_UPPER_BODY_POSE_INDICES`` (12-28).
+        Use ``K1_UPPER_BODY_POSE_INDICES`` (0-9) for K1.
     """
+    if upper_body_pose_indices is None:
+        upper_body_pose_indices = DEFAULT_UPPER_BODY_POSE_INDICES
     new_terms: dict[str, RewardTermCfg] = {}
     for name, term in source.terms.items():
         if name in drop_terms:
@@ -99,7 +113,7 @@ def make_flashsac_reward(
         if name == "pose" and upper_body_pose_weight > 0:
             pw = list(term.params.get("pose_weights", []))
             if pw:
-                for i in range(upper_body_start_idx, len(pw)):
+                for i in upper_body_pose_indices:
                     pw[i] = upper_body_pose_weight
                 term = replace(term, params={**term.params, "pose_weights": pw})
         new_terms[name] = term

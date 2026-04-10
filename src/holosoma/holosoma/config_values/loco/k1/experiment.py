@@ -57,6 +57,40 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
+k1_22dof_flash_sac = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
+    algo=algo.flash_sac,
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    # PPO-default observation (with sin/cos phase clock): canonical v5
+    # retains feet_phase in the reward, so the phase clock must remain.
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum_fast_sac,
+    reward=reward.k1_22dof_loco_flashsac,
+)
+
+k1_22dof_flash_sac_mjwarp = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
+    algo=algo.flash_sac,
+    simulator=simulator.mjwarp,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum_fast_sac,
+    reward=reward.k1_22dof_loco_flashsac,
+)
+
 k1_22dof_fpo = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_fpo_manager"),
@@ -73,4 +107,4 @@ k1_22dof_fpo = ExperimentConfig(
     reward=reward.k1_22dof_loco,
 )
 
-__all__ = ["k1_22dof", "k1_22dof_fast_sac", "k1_22dof_fpo"]
+__all__ = ["k1_22dof", "k1_22dof_fast_sac", "k1_22dof_flash_sac", "k1_22dof_flash_sac_mjwarp", "k1_22dof_fpo"]

@@ -71,10 +71,15 @@ def test_observation_passthrough() -> None:
 
 def test_k1_reward_transform_produces_expected_terms() -> None:
     """k1_22dof_loco transforms to 9 terms (all except alive) with correct weights."""
-    from holosoma.config_values.loco.flashsac_transform import make_flashsac_reward
+    from holosoma.config_values.loco.flashsac_transform import (
+        K1_UPPER_BODY_POSE_INDICES,
+        make_flashsac_reward,
+    )
     from holosoma.config_values.loco.k1.reward import k1_22dof_loco
 
-    generated = make_flashsac_reward(k1_22dof_loco)
+    generated = make_flashsac_reward(
+        k1_22dof_loco, upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES
+    )
 
     assert "alive" not in generated.terms, "alive should be dropped"
     assert len(generated.terms) == 9, f"Expected 9 terms, got {len(generated.terms)}"
@@ -95,7 +100,35 @@ def test_k1_reward_transform_produces_expected_terms() -> None:
             f"K1 '{name}': got {generated.terms[name].weight}, expected {expected}"
         )
 
-    # Upper body pose_weights should be 150
+    # K1 joint order: upper body FIRST (indices 0-9), then legs (10-21).
     pw = generated.terms["pose"].params["pose_weights"]
-    for i in range(12, len(pw)):
-        assert pw[i] == 150.0, f"K1 pose_weights[{i}] should be 150, got {pw[i]}"
+    # Upper body (indices 0-9) should be boosted to 150
+    for i in range(0, 10):
+        assert pw[i] == 150.0, f"K1 pose_weights[{i}] (upper body) should be 150, got {pw[i]}"
+    # Leg joints (indices 10-21) should keep their PPO values
+    assert pw[10] == 0.01, f"K1 pose_weights[10] (Left_Hip_Pitch) should be 0.01, got {pw[10]}"
+    assert pw[13] == 0.01, f"K1 pose_weights[13] (Left_Knee_Pitch) should be 0.01, got {pw[13]}"
+    assert pw[12] == 5.0, f"K1 pose_weights[12] (Left_Hip_Yaw) should be 5.0, got {pw[12]}"
+
+
+def test_k1_flashsac_preset_matches_transform() -> None:
+    """The hand-registered k1_22dof_loco_flashsac matches make_flashsac_reward output."""
+    from holosoma.config_values.loco.flashsac_transform import (
+        K1_UPPER_BODY_POSE_INDICES,
+        make_flashsac_reward,
+    )
+    from holosoma.config_values.loco.k1.reward import k1_22dof_loco, k1_22dof_loco_flashsac
+
+    generated = make_flashsac_reward(
+        k1_22dof_loco, upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES
+    )
+
+    assert set(generated.terms.keys()) == set(k1_22dof_loco_flashsac.terms.keys())
+    for name in k1_22dof_loco_flashsac.terms:
+        gen = generated.terms[name]
+        ref = k1_22dof_loco_flashsac.terms[name]
+        assert gen.weight == ref.weight, f"Weight mismatch on '{name}'"
+        if name == "pose":
+            gen_pw = gen.params.get("pose_weights", [])
+            ref_pw = ref.params.get("pose_weights", [])
+            assert gen_pw == ref_pw, f"pose_weights mismatch"
