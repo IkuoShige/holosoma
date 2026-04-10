@@ -212,17 +212,22 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 #       → still shuffle. entropy OK but shuffle persists.
 #   v7 20260410_094504: PD Kp 200→80 (physics fix), 5-term reward
 #       → no visible change. PD alone not enough.
-#   v8 (current): Codex FK report identified 5 issues. v7 fixed #1
-#       (PD gains). Now fix remaining: reward should match WORKING G1
-#       FlashSAC 9-term v5 recipe (not stripped). Also fix obs scales
-#       and friction in experiment config.
+#   v8 20260410_103035: G1 v5 9-term, G1 obs scales, friction fix
+#       → improvement. Walking but step pitch too fast.
+#   v9 20260410_111104: gait_period 1.2s + randomization
+#       → eval: fwd=0.266m/s (53% tracking), LEFT leg 0.78Hz (correct),
+#       RIGHT leg 5.86Hz (vibration). L-R asymmetry is primary issue.
+#       FlashSAC has no symmetry mechanism (PPO has use_symmetry=True).
+#   v10 (current): action_rate -0.005→-0.05 to suppress R-leg 5.86Hz
+#       vibration. 10x stronger than G1 but K1 needs it to compensate
+#       for missing symmetry enforcement.
 _k1_base = make_flashsac_reward(
     k1_22dof_loco,
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.005,
+        "penalty_action_rate": -0.05,  # v9: -0.005. 10x to suppress R-leg vibration.
         "pose": -0.2,
         "feet_phase": 4.0,
         "penalty_feet_ori": -0.5,

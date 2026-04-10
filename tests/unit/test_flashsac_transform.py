@@ -121,7 +121,7 @@ def test_k1_flashsac_preset_matches_g1_v5_recipe() -> None:
     # G1 v5 weights
     assert k1_22dof_loco_flashsac.terms["feet_phase"].weight == 4.0
     assert k1_22dof_loco_flashsac.terms["feet_phase"].params["swing_height"] == 0.065
-    assert k1_22dof_loco_flashsac.terms["penalty_action_rate"].weight == -0.005
+    assert k1_22dof_loco_flashsac.terms["penalty_action_rate"].weight == -0.05
     assert k1_22dof_loco_flashsac.terms["pose"].weight == -0.2
     assert k1_22dof_loco_flashsac.terms["penalty_orientation"].weight == -1.0
     # K1 upper body (0-9) boosted to 150
