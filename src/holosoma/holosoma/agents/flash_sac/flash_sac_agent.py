@@ -154,6 +154,64 @@ class FlashSACAgent(BaseAlgo):
             cfg=vendored_cfg,
         )
 
+        # Attach symmetry augmentation if the robot has symmetry config.
+        if getattr(self.unwrapped_env.robot_config, "symmetry_joint_names", None):
+            self._setup_symmetry_augmentation()
+
+    def _setup_symmetry_augmentation(self) -> None:
+        """Attach a batch-level symmetry augmenter to the vendored agent.
+
+        Reuses holosoma's ``SymmetryUtils`` (same as PPO/FastSAC) to mirror
+        observations and actions in sampled replay batches. This doubles the
+        effective batch size and enforces left-right consistency without
+        modifying the replay buffer itself.
+        """
+        from holosoma.agents.modules.augmentation_utils import SymmetryUtils
+
+        sym = SymmetryUtils(self.unwrapped_env)
+        actor_obs_keys = list(self.config.actor_obs_keys)
+        critic_obs_keys = list(self.config.critic_obs_keys)
+        actor_dim = self.bridge._actor_obs_dim
+        env = self.unwrapped_env
+
+        def augment_batch(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            obs = batch["observation"]
+            next_obs = batch["next_observation"]
+            actions = batch["action"]
+
+            # Split concatenated obs into actor/critic parts, mirror each.
+            actor_obs = obs[:, :actor_dim]
+            actor_next = next_obs[:, :actor_dim]
+            aug_actor_obs = sym.augment_observations(actor_obs, env, actor_obs_keys)
+            aug_actor_next = sym.augment_observations(actor_next, env, actor_obs_keys)
+            aug_actions = sym.augment_actions(actions)
+
+            if obs.shape[-1] > actor_dim:
+                # Asymmetric: critic obs is the remainder.
+                critic_obs = obs[:, actor_dim:]
+                critic_next = next_obs[:, actor_dim:]
+                aug_critic_obs = sym.augment_observations(critic_obs, env, critic_obs_keys)
+                aug_critic_next = sym.augment_observations(critic_next, env, critic_obs_keys)
+                aug_obs = torch.cat([aug_actor_obs, aug_critic_obs], dim=-1)
+                aug_next_obs = torch.cat([aug_actor_next, aug_critic_next], dim=-1)
+            else:
+                aug_obs = aug_actor_obs
+                aug_next_obs = aug_actor_next
+
+            n_aug = aug_obs.shape[0] // obs.shape[0]
+            return {
+                "observation": aug_obs,
+                "next_observation": aug_next_obs,
+                "action": aug_actions,
+                "reward": batch["reward"].repeat(n_aug),
+                "terminated": batch["terminated"].repeat(n_aug),
+                "truncated": batch["truncated"].repeat(n_aug),
+            }
+
+        assert self._inner_agent is not None
+        self._inner_agent._batch_augment_fn = augment_batch
+        logger.info("[FlashSAC] Symmetry augmentation enabled (batch-level mirroring)")
+
     def learn(self) -> None:
         if self._inner_agent is None:
             self.setup()

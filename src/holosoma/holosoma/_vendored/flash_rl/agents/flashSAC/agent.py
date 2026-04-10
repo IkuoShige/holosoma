@@ -1,7 +1,7 @@
 import math
 import os
 from dataclasses import dataclass, replace
-from typing import Any, MutableMapping, Optional, cast
+from typing import Any, Callable, MutableMapping, Optional, cast
 
 import gymnasium as gym
 import torch
@@ -387,6 +387,10 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         )
         self._update_step = 0
 
+        # Optional callback to augment sampled batches (e.g. symmetry mirroring).
+        # Set by the holosoma adapter after construction.
+        self._batch_augment_fn: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None
+
         # Grad scaler for FP16 AMP
         self._grad_scaler = GradScaler(device=self._device.type, enabled=self._cfg.use_amp)
 
@@ -477,6 +481,10 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
 
         for k, v in batch.items():
             batch[k] = v.to(self._device, non_blocking=True)
+
+        # Optional symmetry augmentation (doubles batch size).
+        if self._batch_augment_fn is not None:
+            batch = self._batch_augment_fn(batch)
 
         if self._cfg.asymmetric_observation:
             batch["actor_observation"] = batch["observation"][:, : self._actor_observation_dim]
