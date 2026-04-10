@@ -658,6 +658,12 @@ class FlashSACVendorConfig:
     critic_obs_keys: List[str] = field(default_factory=lambda: ["critic_obs"])
     """Observation manager group keys consumed by the FlashSAC critic (asymmetric obs)."""
 
+    target_action_scale_rad: float = 0.5
+    """Effective joint-position offset the FlashSAC actor's tanh=1.0 maps to.
+    The bridge multiplies actions by ``target_action_scale_rad / robot.control.action_scale``.
+    Default 0.5 matches upstream IsaacLab. Set to 1.0 for robots whose PPO
+    baseline uses action outputs >> 1.0 (PPO is unbounded, FlashSAC is tanh-bounded)."""
+
     # ---- 1:1 mirror of FlashSACConfig (vendored) -------------------------
     seed: int = 0
     normalize_reward: bool = True

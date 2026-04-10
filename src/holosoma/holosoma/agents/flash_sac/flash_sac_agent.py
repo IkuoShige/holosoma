@@ -78,6 +78,7 @@ class FlashSACAgent(BaseAlgo):
             env,
             actor_obs_keys=tuple(config.actor_obs_keys),
             critic_obs_keys=tuple(config.critic_obs_keys),
+            target_action_scale_rad=config.target_action_scale_rad,
         )
         super().__init__(env=bridge, config=config, device=device, multi_gpu_cfg=multi_gpu_cfg)  # type: ignore[arg-type]
         self.unwrapped_env = env
@@ -115,6 +116,7 @@ class FlashSACAgent(BaseAlgo):
             "critic_obs_keys",
             "updates_per_interaction_step",
             "eval_callbacks",
+            "target_action_scale_rad",
         }
         vendored_kwargs = {k: v for k, v in cfg_dict.items() if k not in adapter_only_fields}
 

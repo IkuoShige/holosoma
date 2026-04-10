@@ -107,8 +107,12 @@ k1_22dof_flash_sac = ExperimentConfig(
     # to discover. sigma 0.15→0.25 raises target_entropy from -10.53 to
     # +0.74, preventing the early temperature collapse that locks into
     # shuffle/march-in-place (confirmed across v1-v4 runs).
+    # PPO actions are unbounded (Normal dist, no tanh); FlashSAC is tanh-bounded.
+    # PPO hip_pitch output ≈3.4 → 3.4×0.25=0.85 rad. FlashSAC max is
+    # tanh=1.0 → multiplier×0.25. target_action_scale_rad=1.0 gives ±1.0 rad,
+    # covering PPO's observed 0.85-0.93 rad peaks.
     algo=replace(algo.flash_sac, config=replace(
-        algo.flash_sac.config, temp_target_sigma=0.25,
+        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
     )),
     simulator=simulator.isaacsim,
     robot=_k1_flashsac_robot,
@@ -153,7 +157,7 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
     algo=replace(algo.flash_sac, config=replace(
-        algo.flash_sac.config, temp_target_sigma=0.25,
+        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
     )),
     simulator=simulator.mjwarp,
     robot=_k1_flashsac_robot,
