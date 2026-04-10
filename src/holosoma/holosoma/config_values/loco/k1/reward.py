@@ -199,37 +199,55 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 # of the v5 recipe — the head should stay stable during locomotion.
 #
 # K1-specific tuning history:
-#   v1 20260410_043117: G1 defaults (sigma=0.15) → shuffle gait.
+#   v1 20260410_043117: G1 v5 defaults (sigma=0.15) → shuffle gait.
 #   v2 20260410_054053: feet_phase 7, swing 0.065, action_rate -0.001
 #       → marginal improvement, still shuffling.
 #   v3 20260410_065007: feet_phase 12, swing 0.04, tracking 1.0
 #       → stopped walking. Marching in place.
-#   v4 20260410_072839: tracking restored 2.0, feet_phase 10, swing 0.04
-#       → still no walk. Temperature collapses to 0.0004 in ALL runs.
-#   v5 (current): ROOT CAUSE was algorithm-level, not reward.
-#       temp_target_sigma raised 0.15→0.25 in experiment config.
-#       Reward reverted to v2 (best shuffle = at least walks forward).
-_k1_base = make_flashsac_reward(
-    k1_22dof_loco,
-    upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
-    weight_overrides={
-        "penalty_ang_vel_xy": -0.05,
-        "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.001,  # G1: -0.005. Allow larger movements.
-        "pose": -0.2,
-        "feet_phase": 7.0,  # G1: 4.0. Stronger for K1 (no waist).
-        "penalty_feet_ori": -0.5,
-        "penalty_close_feet_xy": -1.0,
-    },
-)
-# K1's shorter legs: swing_height 0.09→0.065 (achievable target).
-k1_22dof_loco_flashsac = _replace(
-    _k1_base,
+#   v4 20260410_072839: tracking 2.0, feet_phase 10, swing 0.04
+#       → still no walk. temp=0.0004 in ALL v1-v4 runs.
+#   v5 20260410_080903: sigma 0.15→0.25, reward=v2
+#       → back to shuffle (temp higher but still shuffling).
+#   v6 (current): Codex report showed upstream FlashSAC uses a MUCH
+#       simpler reward (5 terms only). Key insight: holosoma's
+#       ``feet_phase`` (clock-based height match) is exploitable by a
+#       deterministic policy via oscillation — unlike upstream's
+#       ``feet_air_time`` (time airborne). Also, extra shaping terms
+#       (pose, orientation, close_feet, feet_ori) all create local
+#       optima that a narrow policy gets stuck in.
+#       Strategy: strip to upstream-like minimal reward. Walk first,
+#       add shaping later. Keep sigma=0.25 (K1 needs exploration).
+k1_22dof_loco_flashsac = RewardManagerCfg(
+    only_positive_rewards=False,
     terms={
-        **_k1_base.terms,
-        "feet_phase": _replace(
-            _k1_base.terms["feet_phase"],
+        # Core task: velocity tracking (upstream weights)
+        "tracking_lin_vel": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:tracking_lin_vel",
+            weight=2.0,
+            params={"tracking_sigma": 0.25},
+        ),
+        "tracking_ang_vel": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:tracking_ang_vel",
+            weight=1.5,
+            params={"tracking_sigma": 0.25},
+        ),
+        # Gait: feet_phase at LOW weight. Not upstream's feet_air_time
+        # (unavailable in holosoma), but weak enough to not dominate.
+        "feet_phase": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:feet_phase",
+            weight=1.0,  # v2: 7.0. Upstream feet_air_time=0.75. Weak to avoid clock exploitation.
             params={"swing_height": 0.065, "tracking_sigma": 0.008},
+        ),
+        # Minimal penalties (upstream-matched magnitudes)
+        "penalty_ang_vel_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_ang_vel_xy",
+            weight=-0.05,  # matches upstream ang_vel_xy_l2
+            params={},
+        ),
+        "penalty_action_rate": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
+            weight=-0.005,  # matches upstream action_rate_l2
+            params={},
         ),
     },
 )

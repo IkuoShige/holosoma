@@ -111,19 +111,20 @@ def test_k1_reward_transform_produces_expected_terms() -> None:
     assert pw[12] == 5.0, f"K1 pose_weights[12] (Left_Hip_Yaw) should be 5.0, got {pw[12]}"
 
 
-def test_k1_flashsac_preset_has_k1_tuned_values() -> None:
-    """k1_22dof_loco_flashsac has K1-specific tuning on top of v5 recipe."""
+def test_k1_flashsac_preset_is_upstream_minimal() -> None:
+    """k1_22dof_loco_flashsac uses upstream-like minimal reward (v6)."""
     from holosoma.config_values.loco.k1.reward import k1_22dof_loco_flashsac
 
-    # K1-tuned values that differ from G1 defaults
-    assert k1_22dof_loco_flashsac.terms["feet_phase"].weight == 7.0
-    assert k1_22dof_loco_flashsac.terms["feet_phase"].params["swing_height"] == 0.065
-    assert k1_22dof_loco_flashsac.terms["penalty_action_rate"].weight == -0.001
-    assert k1_22dof_loco_flashsac.terms["tracking_lin_vel"].weight == 2.0
-    # Shared v5 values
-    assert k1_22dof_loco_flashsac.terms["pose"].weight == -0.2
-    assert "alive" not in k1_22dof_loco_flashsac.terms
-    # Upper body (0-9) boosted to 150
-    pw = k1_22dof_loco_flashsac.terms["pose"].params["pose_weights"]
-    for i in range(0, 10):
-        assert pw[i] == 150.0, f"pose_weights[{i}] should be 150"
+    # Only 5 terms — upstream-aligned minimal reward
+    assert set(k1_22dof_loco_flashsac.terms.keys()) == {
+        "tracking_lin_vel", "tracking_ang_vel", "feet_phase",
+        "penalty_ang_vel_xy", "penalty_action_rate",
+    }
+    # No shaping terms that create local optima
+    for absent in ("alive", "pose", "penalty_orientation", "penalty_feet_ori", "penalty_close_feet_xy"):
+        assert absent not in k1_22dof_loco_flashsac.terms
+    # Weak feet_phase to avoid clock exploitation
+    assert k1_22dof_loco_flashsac.terms["feet_phase"].weight == 1.0
+    # Upstream-matched penalty magnitudes
+    assert k1_22dof_loco_flashsac.terms["penalty_action_rate"].weight == -0.005
+    assert k1_22dof_loco_flashsac.terms["penalty_ang_vel_xy"].weight == -0.05
