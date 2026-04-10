@@ -57,6 +57,49 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
+# FlashSAC-specific K1 control: reduce leg stiffness so the PD controller
+# does not saturate the effort limit. Stock K1 uses Kp=200 on hips/knees
+# with effort_limit=45 Nm, which means the joint can only move
+# 45/200=0.225 rad per timestep — far too little for a walking gait.
+# Reducing to G1-comparable stiffness (~80 Nm/rad) gives
+# 45/80=0.5625 rad, enough for real steps. Damping halved to match.
+# PPO uses the stock gains and compensates via high-entropy exploration;
+# FlashSAC's narrow policy cannot, so we must fix the physics.
+_k1_flashsac_robot = replace(
+    robot.k1_22dof,
+    control=replace(
+        robot.k1_22dof.control,
+        stiffness={
+            "Head_yaw": 5.0,
+            "Head_pitch": 5.0,
+            "Hip_Yaw": 80.0,       # stock: 200
+            "Hip_Roll": 80.0,      # stock: 200
+            "Hip_Pitch": 80.0,     # stock: 200
+            "Knee": 80.0,          # stock: 200
+            "Ankle_Pitch": 40.0,   # stock: 50
+            "Ankle_Roll": 40.0,    # stock: 50
+            "Shoulder_Pitch": 20.0,
+            "Shoulder_Roll": 20.0,
+            "Elbow_Pitch": 20.0,
+            "Elbow_Yaw": 20.0,
+        },
+        damping={
+            "Head_yaw": 0.5,
+            "Head_pitch": 0.5,
+            "Hip_Yaw": 2.5,        # stock: 5.0
+            "Hip_Roll": 2.5,       # stock: 5.0
+            "Hip_Pitch": 2.5,      # stock: 5.0
+            "Knee": 2.5,           # stock: 5.0
+            "Ankle_Pitch": 1.5,    # stock: 3.0
+            "Ankle_Roll": 1.5,     # stock: 3.0
+            "Shoulder_Pitch": 0.5,
+            "Shoulder_Roll": 0.5,
+            "Elbow_Pitch": 0.5,
+            "Elbow_Yaw": 0.5,
+        },
+    ),
+)
+
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
@@ -68,7 +111,7 @@ k1_22dof_flash_sac = ExperimentConfig(
         algo.flash_sac.config, temp_target_sigma=0.25,
     )),
     simulator=simulator.isaacsim,
-    robot=robot.k1_22dof,
+    robot=_k1_flashsac_robot,
     terrain=terrain.terrain_locomotion_mix,
     # PPO-default observation (with sin/cos phase clock): canonical v5
     # retains feet_phase in the reward, so the phase clock must remain.
@@ -88,7 +131,7 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
         algo.flash_sac.config, temp_target_sigma=0.25,
     )),
     simulator=simulator.mjwarp,
-    robot=robot.k1_22dof,
+    robot=_k1_flashsac_robot,
     terrain=terrain.terrain_locomotion_mix,
     observation=observation.k1_22dof_loco_single_wolinvel,
     action=action.k1_22dof_joint_pos,
