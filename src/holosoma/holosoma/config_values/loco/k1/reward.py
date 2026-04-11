@@ -257,31 +257,26 @@ k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
-        # v26: switch FeetAirTime from discrete first_contact reward
-        # to continuous per-step reward.
+        # v27: fix contact detection from norm(3D)>1N to z-component>5N
+        # to match feet_phase/penalty_foothold convention.
         #
-        # v25 diagnostic data (weight=4.0, threshold_min=0.0):
-        #   feet_air_time : +0.0261 per sec  (inferred avg swing ~0.16 s)
-        #   feet_phase    : +3.06 per sec    (118x stronger)
-        # Problem: the discrete reward fires ~2 Hz (at first_contact)
-        # while feet_phase fires at dt=0.02 (~50 Hz). Same weight gives
-        # 1/25 the firing frequency and a much smaller average reward.
+        # v26 result: feet_air_time=0.062 per sec (predicted 0.35). 5-6x
+        # below predicted. Root cause: norm(3D)>1N was triggering on
+        # swing-phase lateral forces (torque reactions, etc.), causing
+        # spurious contact detections that reset air_time.
         #
-        # v26 continuous reward (per step, while airborne):
-        #   reward_per_step = sum_feet(clip(air_time, 0, threshold_max) * is_airborne)
-        # This fires at 50 Hz like feet_phase. The reward grows linearly
-        # with air_time during the swing (0 at takeoff → threshold_max
-        # at 0.5 s), giving strong continuous gradient for "swing longer".
+        # v27 changes only the contact detection method/threshold inside
+        # FeetAirTime class. Config-side only updates the threshold param
+        # to the new default 5.0 (instead of v25/v26's 1.0).
         #
-        # threshold_max kept at 0.5 (T1's value). Weight kept at 4.0.
-        # The `threshold_min` parameter is removed — per-step semantics
-        # have no deadband concept.
+        # Everything else unchanged from v26: per-step continuous reward,
+        # threshold_max=0.5, weight=4.0.
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
             weight=4.0,
             params={
                 "threshold_max": 0.5,
-                "contact_force_threshold": 1.0,
+                "contact_force_threshold": 5.0,
                 "command_norm_threshold": 0.1,
             },
         ),

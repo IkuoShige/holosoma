@@ -419,8 +419,10 @@ class FeetAirTime(RewardTermBase):
     Params:
         threshold_max: Maximum air time rewarded per step. Air time
             above this is clipped. Default 0.5.
-        contact_force_threshold: Force threshold (Newtons) for detecting
-            ground contact on a foot. Default 1.0.
+        contact_force_threshold: Normal-force threshold (Newtons, z-axis)
+            for detecting ground contact on a foot. Default 5.0. v27
+            switched from full-3D-norm to z-component only to match the
+            convention used by ``feet_phase`` and ``penalty_foothold``.
         command_norm_threshold: Minimum command magnitude below which no
             reward is given. Default 0.1.
 
@@ -433,7 +435,7 @@ class FeetAirTime(RewardTermBase):
         super().__init__(cfg, env)
         params = cfg.params or {}
         self.threshold_max = float(params.get("threshold_max", 0.5))
-        self.contact_force_threshold = float(params.get("contact_force_threshold", 1.0))
+        self.contact_force_threshold = float(params.get("contact_force_threshold", 5.0))
         self.command_norm_threshold = float(params.get("command_norm_threshold", 0.1))
 
         num_envs = env.num_envs
@@ -444,10 +446,14 @@ class FeetAirTime(RewardTermBase):
         self._air_time = torch.zeros(num_envs, num_feet, dtype=torch.float32, device=device)
 
     def __call__(self, env: Any, **kwargs: Any) -> torch.Tensor:
-        # Contact force at each foot body (norm over xyz components).
-        contact_forces = env.simulator.contact_forces[:, env.feet_indices, :]  # [E, F, 3]
-        force_norm = torch.norm(contact_forces, dim=-1)  # [E, F]
-        current_contact = force_norm > self.contact_force_threshold  # [E, F] bool
+        # v27: use z-component (normal force) for contact detection, matching
+        # feet_phase / penalty_foothold convention elsewhere in holosoma.
+        # v26 used `norm(3D)` which summed lateral forces from swing motion
+        # (torque reactions, air drag) into the threshold, causing spurious
+        # contact triggers during swing phases. This reset air_time frequently
+        # and suppressed the reward signal (observed 0.06 vs predicted 0.35).
+        normal_force = env.simulator.contact_forces[:, env.feet_indices, 2]  # [E, F]
+        current_contact = normal_force > self.contact_force_threshold  # [E, F] bool
         airborne = (~current_contact).float()  # [E, F]
 
         # Continuous per-step reward: while airborne, reward = clipped
