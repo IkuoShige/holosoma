@@ -101,13 +101,12 @@ k1_22dof_flash_sac = ExperimentConfig(
     # PPO hip_pitch output ≈3.4 → 3.4×0.25=0.85 rad. FlashSAC max is
     # tanh=1.0 → multiplier×0.25.
     # v13-v15 used target_action_scale_rad=1.0 (multiplier 4.0, max ±1.0 rad).
-    # Problem: to output 0.85 rad, policy needs tanh=0.85 → gradient=0.28
-    # (vanishing). v16 tried scale=2.0 (multiplier 8.0) but caused immediate
-    # splits — hip_roll got ±2.0 rad authority, entering the 8-13x thrashing
-    # regime. v17: scale=1.5 (multiplier 6.0, max ±1.5 rad). For 0.85 rad
-    # hip swing: tanh=0.567, gradient=0.68 (2.4x improvement, safe range).
+    # v16 scale=2.0 caused splits, v17 scale=1.5 was neutral (metrics
+    # identical to v13/v15). v18: revert to 1.0 — the tanh-gradient
+    # hypothesis was wrong. The real bottleneck is the reward landscape
+    # that rewards short quick steps just as much as long strides.
     algo=replace(algo.flash_sac, config=replace(
-        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.5,
+        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
     )),
     simulator=simulator.isaacsim,
     robot=_k1_flashsac_robot,
@@ -129,8 +128,16 @@ k1_22dof_flash_sac = ExperimentConfig(
             ),
         },
     ),
-    # Slower gait clock for K1's shorter legs (0.49m vs G1 0.76m).
-    # gait_period 1.0→1.2s with randomization (G1-matched).
+    # v18 command overrides:
+    # - gait_period 1.2→1.3 (longer swing window per step).
+    #   NOTE: code randomizes FREQUENCY not period. width=0.1 (from 0.2)
+    #   narrows freq range to 0.67-0.87 Hz (period 1.15-1.50s).
+    # - lin_vel_x range [-1.0,1.0]→[-0.8,0.8] and stand_prob 0.2→0.0
+    #   to concentrate training on non-trivial forward motion and
+    #   remove the standing-still attractor. Combined with tighter
+    #   tracking_sigma=0.075 in reward.py, the policy has strong
+    #   pressure to actually reach commanded velocity instead of
+    #   settling for 70% shuffle.
     command=replace(
         command.k1_22dof_command,
         setup_terms={
@@ -138,8 +145,20 @@ k1_22dof_flash_sac = ExperimentConfig(
             "locomotion_gait": replace(
                 command.k1_22dof_command.setup_terms["locomotion_gait"],
                 params={
-                    "gait_period": 1.2,
-                    "gait_period_randomization_width": 0.2,
+                    "gait_period": 1.3,
+                    "gait_period_randomization_width": 0.1,
+                },
+            ),
+            "locomotion_command": replace(
+                command.k1_22dof_command.setup_terms["locomotion_command"],
+                params={
+                    "command_ranges": {
+                        "lin_vel_x": [-0.8, 0.8],
+                        "lin_vel_y": [-0.5, 0.5],
+                        "ang_vel_yaw": [-1.0, 1.0],
+                        "heading": [-3.14, 3.14],
+                    },
+                    "stand_prob": 0.0,
                 },
             ),
         },
@@ -152,7 +171,7 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
     algo=replace(algo.flash_sac, config=replace(
-        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.5,
+        algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
     )),
     simulator=simulator.mjwarp,
     robot=_k1_flashsac_robot,
@@ -177,8 +196,20 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
             "locomotion_gait": replace(
                 command.k1_22dof_command.setup_terms["locomotion_gait"],
                 params={
-                    "gait_period": 1.2,
-                    "gait_period_randomization_width": 0.2,
+                    "gait_period": 1.3,
+                    "gait_period_randomization_width": 0.1,
+                },
+            ),
+            "locomotion_command": replace(
+                command.k1_22dof_command.setup_terms["locomotion_command"],
+                params={
+                    "command_ranges": {
+                        "lin_vel_x": [-0.8, 0.8],
+                        "lin_vel_y": [-0.5, 0.5],
+                        "ang_vel_yaw": [-1.0, 1.0],
+                        "heading": [-3.14, 3.14],
+                    },
+                    "stand_prob": 0.0,
                 },
             ),
         },

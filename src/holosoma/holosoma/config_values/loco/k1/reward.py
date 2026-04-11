@@ -235,16 +235,21 @@ _k1_base = make_flashsac_reward(
         "penalty_orientation": -1.0,
         "penalty_action_rate": -0.005,  # G1 value. Symmetry fixes vibration.
         "pose": -0.2,
-        "feet_phase": 4.0,
+        "feet_phase": 3.0,  # v18: 4.0→3.0 (weaken clock, allow longer strides)
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
 )
+
+
 # K1's shorter legs: swing_height 0.09→0.065.
-# Tighten tracking_sigma 0.25→0.1 for sharper velocity tracking.
-# v16: zero hip_pitch pose penalty (indices 10, 16) to remove residual
-# resistance to large hip excursions. Knee stays at 0.01 to prevent
-# the policy from substituting knee/ankle motion for hip swing.
+# v18 changes (after v13-v17 iteration):
+# - tracking_sigma 0.1→0.075 (tighter velocity tracking)
+# - feet_phase tracking_sigma 0.008→0.012 (gentle clock loosening)
+# - Combined with experiment.py: gait_period 1.2→1.3, lin_vel_x [-0.8, 0.8],
+#   stand_prob 0, these force the policy to actually reach commanded velocity
+#   rather than settling at 70% shuffle.
+# v16: hip_pitch pose_weight 0.01→0.0 (zero residual resistance, kept).
 def _patch_hip_pitch_pose(base: RewardManagerCfg) -> RewardManagerCfg:
     """Zero out hip_pitch pose_weights so the pose term doesn't penalise stride."""
     pose_term = base.terms["pose"]
@@ -264,7 +269,7 @@ k1_22dof_loco_flashsac = _patch_hip_pitch_pose(
             **_k1_base.terms,
             "tracking_lin_vel": _replace(
                 _k1_base.terms["tracking_lin_vel"],
-                params={"tracking_sigma": 0.1},
+                params={"tracking_sigma": 0.075},
             ),
             "tracking_ang_vel": _replace(
                 _k1_base.terms["tracking_ang_vel"],
@@ -272,7 +277,7 @@ k1_22dof_loco_flashsac = _patch_hip_pitch_pose(
             ),
             "feet_phase": _replace(
                 _k1_base.terms["feet_phase"],
-                params={"swing_height": 0.065, "tracking_sigma": 0.008},
+                params={"swing_height": 0.065, "tracking_sigma": 0.012},
             ),
         },
     )
