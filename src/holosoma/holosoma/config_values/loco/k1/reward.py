@@ -235,29 +235,33 @@ _k1_base = make_flashsac_reward(
         "penalty_orientation": -1.0,
         "penalty_action_rate": -0.005,  # G1 value. Symmetry fixes vibration.
         "pose": -0.2,
-        "feet_phase": 4.0,
+        # v23: halve feet_phase from 4.0→2.0 so feet_air_time can dominate
+        # the gait signal. v22 evidence: G_r_max improved 21.6→29.2 (+35%)
+        # showing feet_air_time DID help, but with the 0.5:1 ratio to
+        # feet_phase, gains were local. T1 uses 2:1 (air:phase). v23
+        # matches T1 by halving feet_phase and doubling feet_air_time.
+        "feet_phase": 2.0,
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
 )
 
 
-# v22: add feet_air_time reward term (mujoco_playground T1 port).
-# v21 (byte-for-byte G1 mirror) confirmed the algorithm runs correctly
-# (entropy converges to sigma=0.15 target) but the K1 gait is still
-# poor. The diagnosis: holosoma's canonical v5 reward lacks the one
-# term T1 uses to drive walking gaits — feet_air_time — which directly
-# rewards swing legs spending 0.2-0.5 s airborne per step. Without it,
-# feet_phase only tracks vertical foot height against a phase clock,
-# which can be satisfied by small clocked foot lifts (i.e. shuffling).
-# T1 upstream uses weight 2.0. We start at 2.0 and tune from there.
+# v22: added feet_air_time at weight 2.0 (T1 default). Evidence of
+#     effect: G_r_max 21.6→29.2, mean_bias magnitude up 29%. But not
+#     enough gradient signal to overcome feet_phase (weight 4.0 was
+#     drowning it out). User: "変わらん" (no visible change).
+# v23: match T1's reward ratio. T1 has feet_air_time=2.0, feet_phase=1.0
+#     (2:1 air:phase). Our v22 was 2.0:4.0 (0.5:1). v23 uses 4.0:2.0
+#     to exactly match T1's 2:1 ratio while keeping absolute magnitudes
+#     similar to the v22 total gait signal.
 k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
-            weight=2.0,
+            weight=4.0,  # v23: doubled from 2.0
             params={
                 "threshold_min": 0.2,
                 "threshold_max": 0.5,
