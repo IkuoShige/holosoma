@@ -257,33 +257,30 @@ k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
-        # v25: FeetAirTime surgical fix after v24 diagnostics.
+        # v26: switch FeetAirTime from discrete first_contact reward
+        # to continuous per-step reward.
         #
-        # v24 TB breakdown (at ~50M steps):
-        #   feet_phase       : +3.02  (54% of positive reward, DOMINANT)
-        #   tracking_lin_vel : +1.77  (32%)
-        #   tracking_ang_vel : +0.77  (14%)
-        #   feet_air_time    : +0.0000  ← ZERO CONTRIBUTION
-        #   Hip_Pitch |action|: 0.64 (legs move aggressively)
-        #   episode_length: 987/1000 (no termination bottleneck)
+        # v25 diagnostic data (weight=4.0, threshold_min=0.0):
+        #   feet_air_time : +0.0261 per sec  (inferred avg swing ~0.16 s)
+        #   feet_phase    : +3.06 per sec    (118x stronger)
+        # Problem: the discrete reward fires ~2 Hz (at first_contact)
+        # while feet_phase fires at dt=0.02 (~50 Hz). Same weight gives
+        # 1/25 the firing frequency and a much smaller average reward.
         #
-        # Diagnosis: the policy converged to a shuffle gait local minimum
-        # where legs oscillate fast enough to satisfy feet_phase (clocked
-        # foot-height) and tracking_lin_vel (via forward shuffle motion),
-        # but swing time per step is < 0.2 s. With threshold_min=0.2,
-        # FeetAirTime hit its deadband and provided ZERO gradient to
-        # escape the shuffle.
+        # v26 continuous reward (per step, while airborne):
+        #   reward_per_step = sum_feet(clip(air_time, 0, threshold_max) * is_airborne)
+        # This fires at 50 Hz like feet_phase. The reward grows linearly
+        # with air_time during the swing (0 at takeoff → threshold_max
+        # at 0.5 s), giving strong continuous gradient for "swing longer".
         #
-        # v25 surgical fix (only FeetAirTime params change):
-        #   - threshold_min: 0.2 → 0.0 (every swing gets reward)
-        #   - threshold_max: 0.5 → 1.0 (longer swings rewarded more)
-        #   - weight:        2.0 → 4.0 (match feet_phase strength)
+        # threshold_max kept at 0.5 (T1's value). Weight kept at 4.0.
+        # The `threshold_min` parameter is removed — per-step semantics
+        # have no deadband concept.
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
             weight=4.0,
             params={
-                "threshold_min": 0.0,
-                "threshold_max": 1.0,
+                "threshold_max": 0.5,
                 "contact_force_threshold": 1.0,
                 "command_norm_threshold": 0.1,
             },
