@@ -242,12 +242,30 @@ _k1_base = make_flashsac_reward(
 )
 
 
-# v21: mirror g1_29dof_loco_flashsac exactly — G1 uses tracking_sigma=0.25
-# and swing_height=0.09 inherited from the base reward, not the K1-custom
-# tracking_sigma=0.1 / swing_height=0.065 we had. The previous K1-specific
-# adaptations (tighter sigma, lower swing height "for shorter legs") were
-# part of the 20-iteration chain of deviations from the G1 working
-# structure. v21 reverts them to match G1 behavior.
-k1_22dof_loco_flashsac = _k1_base
+# v22: add feet_air_time reward term (mujoco_playground T1 port).
+# v21 (byte-for-byte G1 mirror) confirmed the algorithm runs correctly
+# (entropy converges to sigma=0.15 target) but the K1 gait is still
+# poor. The diagnosis: holosoma's canonical v5 reward lacks the one
+# term T1 uses to drive walking gaits — feet_air_time — which directly
+# rewards swing legs spending 0.2-0.5 s airborne per step. Without it,
+# feet_phase only tracks vertical foot height against a phase clock,
+# which can be satisfied by small clocked foot lifts (i.e. shuffling).
+# T1 upstream uses weight 2.0. We start at 2.0 and tune from there.
+k1_22dof_loco_flashsac = _replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "feet_air_time": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
+            weight=2.0,
+            params={
+                "threshold_min": 0.2,
+                "threshold_max": 0.5,
+                "contact_force_threshold": 1.0,
+                "command_norm_threshold": 0.1,
+            },
+        ),
+    },
+)
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]

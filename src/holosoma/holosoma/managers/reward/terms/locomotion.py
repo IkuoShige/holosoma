@@ -6,7 +6,7 @@ compatible with the reward manager system.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from holosoma.managers.observation.terms.locomotion import (
     base_forward_vector,
@@ -15,6 +15,7 @@ from holosoma.managers.observation.terms.locomotion import (
     get_projected_gravity,
     gravity_vector,
 )
+from holosoma.managers.reward.base import RewardTermBase
 from holosoma.utils.rotations import (
     quat_apply,
     quat_rotate_batched,
@@ -23,6 +24,7 @@ from holosoma.utils.rotations import (
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
+    from holosoma.config_types.reward import RewardTermCfg
     from holosoma.envs.locomotion.locomotion_manager import LeggedRobotLocomotionManager
 
 
@@ -390,3 +392,91 @@ def alive(env) -> torch.Tensor:
         Reward tensor [num_envs]
     """
     return torch.ones(env.num_envs, dtype=torch.float, device=env.device)
+
+
+# ================================================================================================
+# Stateful reward terms
+# ================================================================================================
+
+
+class FeetAirTime(RewardTermBase):
+    """Reward swing-leg air time on first contact (mujoco_playground T1-style).
+
+    Tracks per-foot air time (time since last ground contact). When a foot
+    touches down after being airborne, awards ``clip(air_time - threshold_min,
+    0, threshold_max - threshold_min)`` summed over feet. Gated by
+    ``||cmd[:3]|| > command_norm_threshold`` so standing still is not
+    rewarded.
+
+    This is the key gait-quality reward that mujoco_playground T1 uses
+    (weight=2.0) and holosoma was missing. See ``mujoco_playground/_src/
+    locomotion/t1/joystick.py::_reward_feet_air_time``.
+
+    Params:
+        threshold_min: Minimum air time (seconds) required before reward
+            starts accruing. Default 0.2 (T1 value).
+        threshold_max: Maximum air time rewarded. Air time above this is
+            clipped. Default 0.5 (T1 value).
+        contact_force_threshold: Force threshold (Newtons) for detecting
+            ground contact on a foot. Default 1.0.
+        command_norm_threshold: Minimum command magnitude below which no
+            reward is given. Default 0.1.
+    """
+
+    def __init__(self, cfg: "RewardTermCfg", env: Any):
+        super().__init__(cfg, env)
+        params = cfg.params or {}
+        self.threshold_min = float(params.get("threshold_min", 0.2))
+        self.threshold_max = float(params.get("threshold_max", 0.5))
+        self.contact_force_threshold = float(params.get("contact_force_threshold", 1.0))
+        self.command_norm_threshold = float(params.get("command_norm_threshold", 0.1))
+
+        num_envs = env.num_envs
+        num_feet = int(env.feet_indices.shape[0])
+        device = env.device
+
+        # Per-env, per-foot air time in seconds.
+        self._air_time = torch.zeros(num_envs, num_feet, dtype=torch.float32, device=device)
+        # Previous contact mask (True when foot was in contact last step).
+        self._prev_contact = torch.zeros(num_envs, num_feet, dtype=torch.bool, device=device)
+
+    def __call__(self, env: Any, **kwargs: Any) -> torch.Tensor:
+        # Contact force at each foot body (norm over xyz components).
+        contact_forces = env.simulator.contact_forces[:, env.feet_indices, :]  # [E, F, 3]
+        force_norm = torch.norm(contact_forces, dim=-1)  # [E, F]
+        current_contact = force_norm > self.contact_force_threshold  # [E, F] bool
+
+        # First contact: was airborne last step, now in contact this step.
+        first_contact = current_contact & ~self._prev_contact
+
+        # Reward = clip(air_time - threshold_min, 0, max_reward_air_time)
+        # applied only at first-contact moments.
+        delta = self._air_time - self.threshold_min
+        max_delta = self.threshold_max - self.threshold_min
+        delta_clipped = torch.clamp(delta, min=0.0, max=max_delta)
+        per_foot_reward = delta_clipped * first_contact.float()
+        reward = torch.sum(per_foot_reward, dim=1)  # [E]
+
+        # Gate by command norm: no reward when standing still command.
+        commands = env.command_manager.commands
+        cmd_norm = torch.norm(commands[:, :3], dim=1)  # lin_x, lin_y, ang_z
+        reward = reward * (cmd_norm > self.command_norm_threshold).float()
+
+        # Advance state for next step: air time increments while airborne,
+        # resets on contact. Use env.dt for physical seconds.
+        self._air_time = torch.where(
+            current_contact,
+            torch.zeros_like(self._air_time),
+            self._air_time + float(env.dt),
+        )
+        self._prev_contact = current_contact
+
+        return reward
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None or env_ids.numel() == 0:
+            self._air_time.zero_()
+            self._prev_contact.zero_()
+        else:
+            self._air_time[env_ids] = 0.0
+            self._prev_contact[env_ids] = False
