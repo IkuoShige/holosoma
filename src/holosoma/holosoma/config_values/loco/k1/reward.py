@@ -242,30 +242,12 @@ _k1_base = make_flashsac_reward(
 )
 
 
-# v19: revert to v13/v15 reward baseline.
-# - tracking_sigma back to 0.1 (v18's 0.075 was an indirect compensation for Kp bug)
-# - feet_phase tracking_sigma back to 0.008
-# - hip_pitch pose_weight stays at 0.01 (revert v16's 0.0 patch — the patch
-#   was compensating for a Kp-induced dead zone, which is now fixed at the
-#   physics layer via Kp=30 in experiment.py).
-# K1's shorter legs: swing_height 0.09→0.065.
-k1_22dof_loco_flashsac = _replace(
-    _k1_base,
-    terms={
-        **_k1_base.terms,
-        "tracking_lin_vel": _replace(
-            _k1_base.terms["tracking_lin_vel"],
-            params={"tracking_sigma": 0.1},
-        ),
-        "tracking_ang_vel": _replace(
-            _k1_base.terms["tracking_ang_vel"],
-            params={"tracking_sigma": 0.1},
-        ),
-        "feet_phase": _replace(
-            _k1_base.terms["feet_phase"],
-            params={"swing_height": 0.065, "tracking_sigma": 0.008},
-        ),
-    },
-)
+# v21: mirror g1_29dof_loco_flashsac exactly — G1 uses tracking_sigma=0.25
+# and swing_height=0.09 inherited from the base reward, not the K1-custom
+# tracking_sigma=0.1 / swing_height=0.065 we had. The previous K1-specific
+# adaptations (tighter sigma, lower swing height "for shorter legs") were
+# part of the 20-iteration chain of deviations from the G1 working
+# structure. v21 reverts them to match G1 behavior.
+k1_22dof_loco_flashsac = _k1_base
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]
