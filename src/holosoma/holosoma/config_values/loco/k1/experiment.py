@@ -57,40 +57,62 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
-# FlashSAC-specific K1 control: match upstream mujoco_playground T1 gains
-# (Booster-family robot with same hip_pitch=-0.2, knee_pitch=0.4 default pose).
+# FlashSAC-specific K1 control: Kp=80 (down from stock 200), Kd=2.5/1.5.
 #
-# Root-cause analysis (v1-v18 forensic):
-#   K1 effort limits: hip_pitch/knee 45 Nm, hip_roll/yaw 30 Nm, ankle 20 Nm.
-#   At Kp=200 (stock): max static offset = 45/200 = 0.225 rad. Way too little.
-#   At Kp=80 (v7-v18): hip_pitch 45/80 = 0.5625 rad, hip_roll 30/80 = 0.375 rad,
-#                       ankle 20/40 = 0.5 rad. ALL below the 1.0 rad tanh range.
-#   Policy outputs ∈ [-1, 1] rad target, but anything > 0.56 collapses into
-#   the same clipped torque — a saturation plateau where FlashSAC's narrow
-#   tanh policy cannot get a gradient signal.
-# At T1's Kp=30 (hip/knee), Kp=10 (ankle): hip_pitch 45/30 = 1.5 rad, hip_roll
-#   30/30 = 1.0 rad, ankle 20/10 = 2.0 rad. ALL >= 1.0 rad tanh range.
-#   Full action space is physically reachable → policy gradient is clean.
-# v19 (this config) ports this gain schedule to K1.
+# History: v7-v18 used Kp=80 (best behavior at v13/v15). v19 ported T1's
+# Kp=30 schedule, but K1's body mass requires the PD to develop ~30 Nm
+# of static support torque per leg. At Kp=30, that needs a 1.0 rad sag
+# from the default pose — the robot literally collapses into a squat
+# before it can generate enough torque to stand. T1's lighter body
+# tolerates Kp=30; K1 does not.
+#
+# v20 reverts to Kp=80 (the v13/v15 baseline that was the local best).
+# The real bottleneck (per Codex post-mortem) was likely the contact
+# termination at force_threshold=1.0 N: if the robot sags or wobbles
+# enough that any "Hip"/"Trunk"/"Arm"/"Head" body touches the ground
+# even mildly, the episode ends. v20 also raises the threshold to
+# 50 N (see the termination override below).
 _k1_flashsac_robot = replace(
     robot.k1_22dof,
     control=replace(
         robot.k1_22dof.control,
         stiffness={
             "Head_yaw": 5.0, "Head_pitch": 5.0,
-            "Hip_Yaw": 30.0, "Hip_Roll": 30.0, "Hip_Pitch": 30.0,
-            "Knee": 30.0, "Ankle_Pitch": 10.0, "Ankle_Roll": 10.0,
+            "Hip_Yaw": 80.0, "Hip_Roll": 80.0, "Hip_Pitch": 80.0,
+            "Knee": 80.0, "Ankle_Pitch": 40.0, "Ankle_Roll": 40.0,
             "Shoulder_Pitch": 20.0, "Shoulder_Roll": 20.0,
             "Elbow_Pitch": 20.0, "Elbow_Yaw": 20.0,
         },
         damping={
             "Head_yaw": 0.5, "Head_pitch": 0.5,
-            "Hip_Yaw": 3.0, "Hip_Roll": 3.0, "Hip_Pitch": 3.0,
-            "Knee": 3.0, "Ankle_Pitch": 3.0, "Ankle_Roll": 3.0,
+            "Hip_Yaw": 2.5, "Hip_Roll": 2.5, "Hip_Pitch": 2.5,
+            "Knee": 2.5, "Ankle_Pitch": 1.5, "Ankle_Roll": 1.5,
             "Shoulder_Pitch": 0.5, "Shoulder_Roll": 0.5,
             "Elbow_Pitch": 0.5, "Elbow_Yaw": 0.5,
         },
     ),
+)
+
+
+# v20: relax the contact termination threshold from 1.0 N (stock) to 50 N.
+# The 1.0 N threshold ends episodes on the slightest "Hip/Trunk/Arm/Head"
+# body contact with the ground. With self-collisions disabled, this is
+# essentially a fall proxy — but at 1.0 N it triggers far too easily.
+# 50 N still detects clear ground impacts but tolerates exploratory wobble.
+# This is the most likely root cause of the persistent v13-v19 metric
+# plateau: episodes were ending too quickly to learn long-stride gaits.
+_k1_flashsac_termination = replace(
+    termination.k1_22dof_termination,
+    terms={
+        **termination.k1_22dof_termination.terms,
+        "contact": replace(
+            termination.k1_22dof_termination.terms["contact"],
+            params={
+                "force_threshold": 50.0,
+                "contact_indices_attr": "termination_contact_indices",
+            },
+        ),
+    },
 )
 
 k1_22dof_flash_sac = ExperimentConfig(
@@ -117,7 +139,7 @@ k1_22dof_flash_sac = ExperimentConfig(
     # retains feet_phase in the reward, so the phase clock must remain.
     observation=observation.k1_22dof_loco_single_wolinvel,
     action=action.k1_22dof_joint_pos,
-    termination=termination.k1_22dof_termination,
+    termination=_k1_flashsac_termination,
     # FlashSAC-specific: softer friction range [0.5, 1.25] (G1-matched).
     # Stock K1 uses [0.1, 1.0] which biases toward conservative shuffle.
     randomization=replace(
@@ -162,7 +184,7 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     terrain=terrain.terrain_locomotion_mix,
     observation=observation.k1_22dof_loco_single_wolinvel,
     action=action.k1_22dof_joint_pos,
-    termination=termination.k1_22dof_termination,
+    termination=_k1_flashsac_termination,
     randomization=replace(
         randomization.k1_22dof_randomization,
         setup_terms={
