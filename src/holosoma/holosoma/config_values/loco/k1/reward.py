@@ -235,12 +235,10 @@ _k1_base = make_flashsac_reward(
         "penalty_orientation": -1.0,
         "penalty_action_rate": -0.005,  # G1 value. Symmetry fixes vibration.
         "pose": -0.2,
-        # v23: halve feet_phase from 4.0→2.0 so feet_air_time can dominate
-        # the gait signal. v22 evidence: G_r_max improved 21.6→29.2 (+35%)
-        # showing feet_air_time DID help, but with the 0.5:1 ratio to
-        # feet_phase, gains were local. T1 uses 2:1 (air:phase). v23
-        # matches T1 by halving feet_phase and doubling feet_air_time.
-        "feet_phase": 2.0,
+        # v24: revert feet_phase to 4.0 (v22 value). v23 halved it to 2.0
+        # which hurt G_r_max (29.16→23.00). feet_phase is the gait clock
+        # anchor; removing it leaves feet_air_time without structure.
+        "feet_phase": 4.0,
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
@@ -259,9 +257,16 @@ k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
+        # v24: revert feet_air_time to 2.0 (v22 value). v22 had the best
+        # G_r_max=29.16 with feet_phase=4.0 + feet_air_time=2.0. v23 tried
+        # 2.0:4.0 (inverted) but G_r_max dropped to 23.00. Keep v22's
+        # balance but run with diagnostics enabled so we can see WHY the
+        # policy isn't converging (per-term reward breakdown, per-joint
+        # action magnitudes, episode length distribution — all added in
+        # the flash_sac_agent/bridge patches for v24).
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
-            weight=4.0,  # v23: doubled from 2.0
+            weight=2.0,
             params={
                 "threshold_min": 0.2,
                 "threshold_max": 0.5,

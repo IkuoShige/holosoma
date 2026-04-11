@@ -239,6 +239,22 @@ class FlashSACAgent(BaseAlgo):
         window_update_info: dict[str, Any] = {}
         update_counter: float = 0.0
 
+        # Diagnostic running buffers (added v24 for eval visibility).
+        # Per-term episode reward sums and counts accumulated over the
+        # current logging window. Flushed at every logging flush.
+        diag_episode_sum: dict[str, float] = {}
+        diag_episode_count: int = 0
+        # Per-joint action absolute value sum over steps, for computing
+        # per-joint mean |action| over the logging window.
+        diag_action_abs_sum: np.ndarray | None = None
+        diag_action_step_count: int = 0
+        # Max episode length observed in window, and termination fraction.
+        diag_episode_length_sum: float = 0.0
+        diag_episode_length_max: float = 0.0
+        diag_termination_num: int = 0
+        diag_termination_denom: int = 0
+        diag_latest_to_log: dict[str, float] = {}
+
         pbar = tqdm.tqdm(
             range(1, int(cfg.num_learning_iterations + 1)),
             smoothing=0.1,
@@ -269,6 +285,45 @@ class FlashSACAgent(BaseAlgo):
                 if terminateds[env_idx] or truncateds[env_idx]:
                     next_buffer_observations[env_idx] = env_infos["final_obs"][env_idx]
 
+            # -----------------------------------------------------------
+            # Diagnostic accumulation (cheap, CPU-only after step).
+            # -----------------------------------------------------------
+            # Per-joint |action| running sum (averages flushed at log time)
+            action_abs_step = np.abs(actions).mean(axis=0)  # [action_dim]
+            if diag_action_abs_sum is None:
+                diag_action_abs_sum = action_abs_step.copy()
+            else:
+                diag_action_abs_sum += action_abs_step
+            diag_action_step_count += 1
+
+            # Per-term episode reward (only populated on step where resets happen)
+            ep_info = env_infos.get("episode")
+            if ep_info:
+                # ep_info is a dict[str, float] of per-term reward means
+                # over the reset envs from this step.
+                n_resets = int(env_infos.get("num_resets", 1) or 1)
+                for term_name, mean_val in ep_info.items():
+                    diag_episode_sum[term_name] = (
+                        diag_episode_sum.get(term_name, 0.0) + float(mean_val) * n_resets
+                    )
+                diag_episode_count += n_resets
+
+                # Episode length and termination fraction
+                ep_len_mean = env_infos.get("episode_length_mean")
+                ep_len_max = env_infos.get("episode_length_max")
+                if ep_len_mean is not None:
+                    diag_episode_length_sum += float(ep_len_mean) * n_resets
+                if ep_len_max is not None:
+                    diag_episode_length_max = max(diag_episode_length_max, float(ep_len_max))
+                term_frac = env_infos.get("termination_fraction")
+                if term_frac is not None:
+                    diag_termination_num += float(term_frac) * n_resets
+                    diag_termination_denom += n_resets
+
+            to_log_info = env_infos.get("to_log")
+            if to_log_info:
+                diag_latest_to_log.update({k: float(v) for k, v in to_log_info.items()})
+
             transition = {
                 "observation": observations,
                 "action": actions,
@@ -289,8 +344,47 @@ class FlashSACAgent(BaseAlgo):
                     update_counter -= 1
 
                 if cfg.logging_interval and interaction_step % cfg.logging_interval == 0:
+                    # Flush diagnostic running buffers into window_update_info.
+                    # Per-term episode rewards (averages over episodes that
+                    # finished within this window).
+                    if diag_episode_count > 0:
+                        for term_name, total in diag_episode_sum.items():
+                            window_update_info[f"episode/{term_name}"] = total / diag_episode_count
+                        window_update_info["episode/length_mean"] = (
+                            diag_episode_length_sum / diag_episode_count
+                        )
+                        window_update_info["episode/length_max"] = diag_episode_length_max
+                        window_update_info["episode/count_in_window"] = float(diag_episode_count)
+                        if diag_termination_denom > 0:
+                            window_update_info["episode/termination_fraction"] = (
+                                diag_termination_num / diag_termination_denom
+                            )
+
+                    # Per-joint |action| means over the window.
+                    if diag_action_abs_sum is not None and diag_action_step_count > 0:
+                        action_abs_mean = diag_action_abs_sum / diag_action_step_count
+                        window_update_info["action/abs_mean_all"] = float(action_abs_mean.mean())
+                        window_update_info["action/abs_max_all"] = float(action_abs_mean.max())
+                        for i, v in enumerate(action_abs_mean):
+                            window_update_info[f"action/abs_mean_j{i:02d}"] = float(v)
+
+                    # Env log_dict (average_episode_length from curriculum etc.)
+                    for k, v in diag_latest_to_log.items():
+                        window_update_info[f"env/{k}"] = v
+
                     self._log_metrics(window_update_info, env_step)
                     window_update_info = {}
+
+                    # Reset diagnostic buffers for next window.
+                    diag_episode_sum = {}
+                    diag_episode_count = 0
+                    diag_action_abs_sum = None
+                    diag_action_step_count = 0
+                    diag_episode_length_sum = 0.0
+                    diag_episode_length_max = 0.0
+                    diag_termination_num = 0
+                    diag_termination_denom = 0
+                    diag_latest_to_log = {}
 
                 if cfg.save_interval and interaction_step % cfg.save_interval == 0:
                     self._save_checkpoint(interaction_step)

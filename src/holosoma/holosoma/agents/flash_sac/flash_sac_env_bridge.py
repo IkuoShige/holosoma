@@ -191,6 +191,17 @@ class FlashSACGymBridge(VectorEnv):
         if self._action_scale_multiplier is not None:
             torch_actions = torch_actions * self._action_scale_multiplier
 
+        # Diagnostics: capture per-env episode length BEFORE step() runs.
+        # Holosoma resets episode_length_buf[env_ids] to 0 inside
+        # _post_physics_step (via reset_envs_idx), so by the time we see
+        # the post-step state, the length for terminating envs is already
+        # lost. We snapshot it before step and compute the final length
+        # as snapshot + 1 (for the step that just happened).
+        prev_episode_length: torch.Tensor | None = None
+        env_ep_buf = getattr(self._env, "episode_length_buf", None)
+        if isinstance(env_ep_buf, torch.Tensor):
+            prev_episode_length = env_ep_buf.detach().clone()
+
         obs_buf_dict, rew_buf, reset_buf, extras = self._env.step({"actions": torch_actions})
 
         actor_obs = self._concat_groups(obs_buf_dict, self._actor_obs_keys)
@@ -260,6 +271,69 @@ class FlashSACGymBridge(VectorEnv):
             "observations": {"critic": critic_obs},
             "final_obs": full_final,
         }
+
+        # ------------------------------------------------------------------
+        # Diagnostic forwarding (added for v24 debug cycle).
+        #
+        # Forward holosoma's per-term episode reward breakdown and
+        # environment log_dict through infos so the FlashSAC training loop
+        # can log them to TensorBoard. Without this, FlashSAC sees only the
+        # aggregate reward scalar and has no visibility into which reward
+        # terms are actually accumulating — the root cause of the
+        # 20-iteration hyperparameter tuning dead end.
+        #
+        # `extras["episode"]` is populated only for env_ids that reset this
+        # step. Each value is a tensor over reset envs (shape [num_resets]).
+        # We aggregate to a single scalar mean for this step and let the
+        # agent maintain a running average across logging windows.
+        # ------------------------------------------------------------------
+        if env_ids is not None and env_ids.numel() > 0:
+            episode_rewards = extras.get("episode") or {}
+            raw_episode_rewards = extras.get("raw_episode") or {}
+
+            def _reset_env_mean(tensor_map: dict[str, Any]) -> dict[str, float]:
+                out: dict[str, float] = {}
+                for term_name, tensor in tensor_map.items():
+                    if not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
+                        continue
+                    out[term_name] = float(tensor.float().mean().item())
+                return out
+
+            episode_scalars = _reset_env_mean(episode_rewards)
+            raw_episode_scalars = _reset_env_mean(raw_episode_rewards)
+            if episode_scalars:
+                infos["episode"] = episode_scalars
+            if raw_episode_scalars:
+                infos["raw_episode"] = raw_episode_scalars
+
+            # Episode length at termination: pre-step length + 1 (for the
+            # step that pushed the episode into termination).
+            if prev_episode_length is not None:
+                final_lengths = prev_episode_length[env_ids].float() + 1.0
+                infos["episode_length_mean"] = float(final_lengths.mean().item())
+                infos["episode_length_max"] = float(final_lengths.max().item())
+
+            # Split terminated vs truncated (fall vs timeout) for this step.
+            terminated_count = int((terminated & reset_bool)[env_ids].sum().item())
+            truncated_count = int(time_outs_bool[env_ids].sum().item())
+            total = terminated_count + truncated_count
+            if total > 0:
+                infos["termination_fraction"] = terminated_count / total
+
+            infos["num_resets"] = int(env_ids.numel())
+        else:
+            infos["num_resets"] = 0
+
+        # Forward env log_dict (average_episode_length etc.) always.
+        to_log = extras.get("to_log") or {}
+        to_log_scalars: dict[str, float] = {}
+        for k, v in to_log.items():
+            if isinstance(v, torch.Tensor) and v.numel() == 1:
+                to_log_scalars[k] = float(v.item())
+            elif isinstance(v, (int, float)):
+                to_log_scalars[k] = float(v)
+        if to_log_scalars:
+            infos["to_log"] = to_log_scalars
 
         if self._to_numpy:
             obs = obs.detach().cpu().numpy()
