@@ -257,19 +257,33 @@ k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
-        # v24: revert feet_air_time to 2.0 (v22 value). v22 had the best
-        # G_r_max=29.16 with feet_phase=4.0 + feet_air_time=2.0. v23 tried
-        # 2.0:4.0 (inverted) but G_r_max dropped to 23.00. Keep v22's
-        # balance but run with diagnostics enabled so we can see WHY the
-        # policy isn't converging (per-term reward breakdown, per-joint
-        # action magnitudes, episode length distribution — all added in
-        # the flash_sac_agent/bridge patches for v24).
+        # v25: FeetAirTime surgical fix after v24 diagnostics.
+        #
+        # v24 TB breakdown (at ~50M steps):
+        #   feet_phase       : +3.02  (54% of positive reward, DOMINANT)
+        #   tracking_lin_vel : +1.77  (32%)
+        #   tracking_ang_vel : +0.77  (14%)
+        #   feet_air_time    : +0.0000  ← ZERO CONTRIBUTION
+        #   Hip_Pitch |action|: 0.64 (legs move aggressively)
+        #   episode_length: 987/1000 (no termination bottleneck)
+        #
+        # Diagnosis: the policy converged to a shuffle gait local minimum
+        # where legs oscillate fast enough to satisfy feet_phase (clocked
+        # foot-height) and tracking_lin_vel (via forward shuffle motion),
+        # but swing time per step is < 0.2 s. With threshold_min=0.2,
+        # FeetAirTime hit its deadband and provided ZERO gradient to
+        # escape the shuffle.
+        #
+        # v25 surgical fix (only FeetAirTime params change):
+        #   - threshold_min: 0.2 → 0.0 (every swing gets reward)
+        #   - threshold_max: 0.5 → 1.0 (longer swings rewarded more)
+        #   - weight:        2.0 → 4.0 (match feet_phase strength)
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
-            weight=2.0,
+            weight=4.0,
             params={
-                "threshold_min": 0.2,
-                "threshold_max": 0.5,
+                "threshold_min": 0.0,
+                "threshold_max": 1.0,
                 "contact_force_threshold": 1.0,
                 "command_norm_threshold": 0.1,
             },
