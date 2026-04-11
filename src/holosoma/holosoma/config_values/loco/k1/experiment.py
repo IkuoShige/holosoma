@@ -57,33 +57,36 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
-# FlashSAC-specific K1 control: reduce leg stiffness so the PD controller
-# does not saturate the effort limit. Stock K1 uses Kp=200 on hips/knees
-# with effort_limit=45 Nm, which means the joint can only move
-# 45/200=0.225 rad per timestep — far too little for a walking gait.
-# Reducing to G1-comparable stiffness (~80 Nm/rad) gives
-# 45/80=0.5625 rad, enough for real steps. Damping halved to match.
-# PPO uses the stock gains and compensates via high-entropy exploration;
-# FlashSAC's narrow policy cannot, so we must fix the physics.
-# PD gains: Kp=80 (reduced from stock 200) is better for FlashSAC.
-# v13(Kp=80): hip amp 0.30rad. v14(Kp=200): hip amp 0.14rad (worse).
-# Kp=80 is more compliant → policy can output larger actions safely.
-# Kp=200 makes PD too stiff → policy learns cautious small actions.
+# FlashSAC-specific K1 control: match upstream mujoco_playground T1 gains
+# (Booster-family robot with same hip_pitch=-0.2, knee_pitch=0.4 default pose).
+#
+# Root-cause analysis (v1-v18 forensic):
+#   K1 effort limits: hip_pitch/knee 45 Nm, hip_roll/yaw 30 Nm, ankle 20 Nm.
+#   At Kp=200 (stock): max static offset = 45/200 = 0.225 rad. Way too little.
+#   At Kp=80 (v7-v18): hip_pitch 45/80 = 0.5625 rad, hip_roll 30/80 = 0.375 rad,
+#                       ankle 20/40 = 0.5 rad. ALL below the 1.0 rad tanh range.
+#   Policy outputs ∈ [-1, 1] rad target, but anything > 0.56 collapses into
+#   the same clipped torque — a saturation plateau where FlashSAC's narrow
+#   tanh policy cannot get a gradient signal.
+# At T1's Kp=30 (hip/knee), Kp=10 (ankle): hip_pitch 45/30 = 1.5 rad, hip_roll
+#   30/30 = 1.0 rad, ankle 20/10 = 2.0 rad. ALL >= 1.0 rad tanh range.
+#   Full action space is physically reachable → policy gradient is clean.
+# v19 (this config) ports this gain schedule to K1.
 _k1_flashsac_robot = replace(
     robot.k1_22dof,
     control=replace(
         robot.k1_22dof.control,
         stiffness={
             "Head_yaw": 5.0, "Head_pitch": 5.0,
-            "Hip_Yaw": 80.0, "Hip_Roll": 80.0, "Hip_Pitch": 80.0,
-            "Knee": 80.0, "Ankle_Pitch": 40.0, "Ankle_Roll": 40.0,
+            "Hip_Yaw": 30.0, "Hip_Roll": 30.0, "Hip_Pitch": 30.0,
+            "Knee": 30.0, "Ankle_Pitch": 10.0, "Ankle_Roll": 10.0,
             "Shoulder_Pitch": 20.0, "Shoulder_Roll": 20.0,
             "Elbow_Pitch": 20.0, "Elbow_Yaw": 20.0,
         },
         damping={
             "Head_yaw": 0.5, "Head_pitch": 0.5,
-            "Hip_Yaw": 2.5, "Hip_Roll": 2.5, "Hip_Pitch": 2.5,
-            "Knee": 2.5, "Ankle_Pitch": 1.5, "Ankle_Roll": 1.5,
+            "Hip_Yaw": 3.0, "Hip_Roll": 3.0, "Hip_Pitch": 3.0,
+            "Knee": 3.0, "Ankle_Pitch": 3.0, "Ankle_Roll": 3.0,
             "Shoulder_Pitch": 0.5, "Shoulder_Roll": 0.5,
             "Elbow_Pitch": 0.5, "Elbow_Yaw": 0.5,
         },
@@ -100,11 +103,10 @@ k1_22dof_flash_sac = ExperimentConfig(
     # PPO actions are unbounded (Normal dist, no tanh); FlashSAC is tanh-bounded.
     # PPO hip_pitch output ≈3.4 → 3.4×0.25=0.85 rad. FlashSAC max is
     # tanh=1.0 → multiplier×0.25.
-    # v13-v15 used target_action_scale_rad=1.0 (multiplier 4.0, max ±1.0 rad).
-    # v16 scale=2.0 caused splits, v17 scale=1.5 was neutral (metrics
-    # identical to v13/v15). v18: revert to 1.0 — the tanh-gradient
-    # hypothesis was wrong. The real bottleneck is the reward landscape
-    # that rewards short quick steps just as much as long strides.
+    # target_action_scale_rad=1.0 is the v13/v15/v19 baseline.
+    # v16 (2.0) caused splits, v17 (1.5) was neutral — the tanh-gradient
+    # hypothesis was wrong. v19 fixes the real issue (Kp saturation plateau)
+    # via PD gain reduction in _k1_flashsac_robot above.
     algo=replace(algo.flash_sac, config=replace(
         algo.flash_sac.config, temp_target_sigma=0.25, target_action_scale_rad=1.0,
     )),
@@ -128,16 +130,10 @@ k1_22dof_flash_sac = ExperimentConfig(
             ),
         },
     ),
-    # v18 command overrides:
-    # - gait_period 1.2→1.3 (longer swing window per step).
-    #   NOTE: code randomizes FREQUENCY not period. width=0.1 (from 0.2)
-    #   narrows freq range to 0.67-0.87 Hz (period 1.15-1.50s).
-    # - lin_vel_x range [-1.0,1.0]→[-0.8,0.8] and stand_prob 0.2→0.0
-    #   to concentrate training on non-trivial forward motion and
-    #   remove the standing-still attractor. Combined with tighter
-    #   tracking_sigma=0.075 in reward.py, the policy has strong
-    #   pressure to actually reach commanded velocity instead of
-    #   settling for 70% shuffle.
+    # v19: revert v18 command tweaks (gait_period, lin_vel_x, stand_prob,
+    # tracking_sigma) — they were an attempt to compensate for Kp saturation
+    # which is now fixed at the physics level via Kp=30. Only keep the
+    # K1-specific gait_period=1.2 with G1-matched randomization width 0.2.
     command=replace(
         command.k1_22dof_command,
         setup_terms={
@@ -145,20 +141,8 @@ k1_22dof_flash_sac = ExperimentConfig(
             "locomotion_gait": replace(
                 command.k1_22dof_command.setup_terms["locomotion_gait"],
                 params={
-                    "gait_period": 1.3,
-                    "gait_period_randomization_width": 0.1,
-                },
-            ),
-            "locomotion_command": replace(
-                command.k1_22dof_command.setup_terms["locomotion_command"],
-                params={
-                    "command_ranges": {
-                        "lin_vel_x": [-0.8, 0.8],
-                        "lin_vel_y": [-0.5, 0.5],
-                        "ang_vel_yaw": [-1.0, 1.0],
-                        "heading": [-3.14, 3.14],
-                    },
-                    "stand_prob": 0.0,
+                    "gait_period": 1.2,
+                    "gait_period_randomization_width": 0.2,
                 },
             ),
         },
@@ -196,20 +180,8 @@ k1_22dof_flash_sac_mjwarp = ExperimentConfig(
             "locomotion_gait": replace(
                 command.k1_22dof_command.setup_terms["locomotion_gait"],
                 params={
-                    "gait_period": 1.3,
-                    "gait_period_randomization_width": 0.1,
-                },
-            ),
-            "locomotion_command": replace(
-                command.k1_22dof_command.setup_terms["locomotion_command"],
-                params={
-                    "command_ranges": {
-                        "lin_vel_x": [-0.8, 0.8],
-                        "lin_vel_y": [-0.5, 0.5],
-                        "ang_vel_yaw": [-1.0, 1.0],
-                        "heading": [-3.14, 3.14],
-                    },
-                    "stand_prob": 0.0,
+                    "gait_period": 1.2,
+                    "gait_period_randomization_width": 0.2,
                 },
             ),
         },

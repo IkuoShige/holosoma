@@ -235,52 +235,37 @@ _k1_base = make_flashsac_reward(
         "penalty_orientation": -1.0,
         "penalty_action_rate": -0.005,  # G1 value. Symmetry fixes vibration.
         "pose": -0.2,
-        "feet_phase": 3.0,  # v18: 4.0→3.0 (weaken clock, allow longer strides)
+        "feet_phase": 4.0,
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
 )
 
 
+# v19: revert to v13/v15 reward baseline.
+# - tracking_sigma back to 0.1 (v18's 0.075 was an indirect compensation for Kp bug)
+# - feet_phase tracking_sigma back to 0.008
+# - hip_pitch pose_weight stays at 0.01 (revert v16's 0.0 patch — the patch
+#   was compensating for a Kp-induced dead zone, which is now fixed at the
+#   physics layer via Kp=30 in experiment.py).
 # K1's shorter legs: swing_height 0.09→0.065.
-# v18 changes (after v13-v17 iteration):
-# - tracking_sigma 0.1→0.075 (tighter velocity tracking)
-# - feet_phase tracking_sigma 0.008→0.012 (gentle clock loosening)
-# - Combined with experiment.py: gait_period 1.2→1.3, lin_vel_x [-0.8, 0.8],
-#   stand_prob 0, these force the policy to actually reach commanded velocity
-#   rather than settling at 70% shuffle.
-# v16: hip_pitch pose_weight 0.01→0.0 (zero residual resistance, kept).
-def _patch_hip_pitch_pose(base: RewardManagerCfg) -> RewardManagerCfg:
-    """Zero out hip_pitch pose_weights so the pose term doesn't penalise stride."""
-    pose_term = base.terms["pose"]
-    pw = list(pose_term.params["pose_weights"])
-    pw[10] = 0.0  # Left_Hip_Pitch
-    pw[16] = 0.0  # Right_Hip_Pitch
-    return _replace(
-        base,
-        terms={**base.terms, "pose": _replace(pose_term, params={**pose_term.params, "pose_weights": pw})},
-    )
-
-
-k1_22dof_loco_flashsac = _patch_hip_pitch_pose(
-    _replace(
-        _k1_base,
-        terms={
-            **_k1_base.terms,
-            "tracking_lin_vel": _replace(
-                _k1_base.terms["tracking_lin_vel"],
-                params={"tracking_sigma": 0.075},
-            ),
-            "tracking_ang_vel": _replace(
-                _k1_base.terms["tracking_ang_vel"],
-                params={"tracking_sigma": 0.1},
-            ),
-            "feet_phase": _replace(
-                _k1_base.terms["feet_phase"],
-                params={"swing_height": 0.065, "tracking_sigma": 0.012},
-            ),
-        },
-    )
+k1_22dof_loco_flashsac = _replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "tracking_lin_vel": _replace(
+            _k1_base.terms["tracking_lin_vel"],
+            params={"tracking_sigma": 0.1},
+        ),
+        "tracking_ang_vel": _replace(
+            _k1_base.terms["tracking_ang_vel"],
+            params={"tracking_sigma": 0.1},
+        ),
+        "feet_phase": _replace(
+            _k1_base.terms["feet_phase"],
+            params={"swing_height": 0.065, "tracking_sigma": 0.008},
+        ),
+    },
 )
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]
