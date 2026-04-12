@@ -66,16 +66,19 @@ k1_22dof_fast_sac = ExperimentConfig(
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
-    # T1-parity algo settings:
-    # - asymmetric_observation=True: critic sees linvel, actor doesn't
-    #   (fixes info leak where actor was seeing critic_obs via bridge concat)
-    # - gamma=0.97: shorter horizon, don't lock into long-term shuffle returns
-    # - n_step=1: single-step TD for less biased critic
+    # v29: raise target_action_scale_rad 0.5→1.0 (PPO uses 0.85 rad hip offset,
+    # 0.5 was a hard mechanical ceiling) + extend training to 100M env steps.
+    # v16-v17 tried scale changes with no effect because the policy was in
+    # shuffle local min. v28 broke out of shuffle with stride_progress —
+    # now the scale ceiling is the real bottleneck.
+    # All other v28 settings preserved (asymmetric, gamma=0.97, n_step=1).
     algo=replace(algo.flash_sac, config=replace(
         algo.flash_sac.config,
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
+        target_action_scale_rad=1.0,
+        num_learning_iterations=100_000,
     )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,
