@@ -57,41 +57,46 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
-# v28 (Codex dual-reviewed): T1-parity algo + stride reward + forward curriculum.
-# v21-v27 used G1-mirror stock defaults but K1 still shuffled. Codex diagnosis:
-# "PPO用 reward をそのまま FlashSAC に食わせると K1 では ankle/shuffle local
-# optimum に落ちる". The fix is three-fold: (1) T1-parity algo settings,
-# (2) stride-progress reward that's ankle-flick-proof, (3) forward-only
-# command curriculum to simplify the initial gait discovery.
+# v35: PPO original reward + FlashSAC exploration-tuned + short buffer.
+#
+# Thesis: "FlashSAC の探索設計を task に合わせれば、PPO の reward が
+# そのまま動くはず。FlashSAC 専用の reward shaping は workaround。"
+#
+# Phase 1 (this config): on-policy-like FlashSAC.
+#   - PPO の ORIGINAL reward (k1_22dof_loco) をそのまま使う
+#   - PPO の curriculum (initial_scale=0.1, penalties 段階的)
+#   - Short buffer (262k) = 最新データのみ保持 (on-policy 的)
+#   - temp_target_sigma=0.25 (collapse 防止, entropy target +0.72)
+#   - temp_initial_value=0.03 (初期探索 3x 強化)
+#   - actor_noise_zeta_mu=1.2 (低い = 長い noise repetition)
+#   - UTD=1.0 (on-policy 寄り)
+#   - Forward-biased command + stand_prob=0.1
+#
+# Abort criteria: 3k iter で temperature < 0.002 かつ forward progress 低下
+# Transition to Phase 2: 10-15k iter で歩行確認後, buffer/UTD を off-policy に
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
-    # v31: num_envs 4096→1024 to match FlashSAC upstream recommendation.
-    # FlashSAC uses 1024 for all GPU simulators (IsaacLab, MuJoCo Playground).
-    # 4096 was holosoma's TrainingConfig default, not FlashSAC-tuned.
-    # At batch_size=2048, 1024 envs gives proper replay ratio.
-    # 50k iters × 1024 envs = ~51M env steps (sufficient per v30 convergence data).
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager", num_envs=1024),
-    # v29: raise target_action_scale_rad 0.5→1.0 (PPO uses 0.85 rad hip offset,
-    # 0.5 was a hard mechanical ceiling) + extend training to 100M env steps.
-    # v16-v17 tried scale changes with no effect because the policy was in
-    # shuffle local min. v28 broke out of shuffle with stride_progress —
-    # now the scale ceiling is the real bottleneck.
-    # All other v28 settings preserved (asymmetric, gamma=0.97, n_step=1).
     algo=replace(algo.flash_sac, config=replace(
         algo.flash_sac.config,
+        # T1-parity critic settings
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
+        # Action scale for PPO-level hip amplitude
         target_action_scale_rad=1.0,
-        num_learning_iterations=100_000,
-        # v34: tune exploration time constant for walking.
-        # Stock zeta_mu=2.0 = noise changes every 2 steps (0.04s).
-        # K1 swing phase ≈ 25 steps (0.5s). Policy needs temporally
-        # coherent exploration to discover stride patterns.
-        # zeta_mu=10 → noise persists ~10 steps (0.2s) = covers
-        # ~40% of a swing phase. Enough coherence to try a stride.
-        actor_noise_zeta_mu=10.0,
+        # Exploration: on-policy-like
+        temp_initial_value=0.03,
+        temp_target_sigma=0.25,
+        actor_noise_zeta_mu=1.2,
         actor_noise_zeta_max=25,
+        # Short buffer: ~256 vector steps. Forces learning from recent data.
+        buffer_max_length=262_144,
+        buffer_min_length=32_768,
+        updates_per_interaction_step=1.0,
+        sample_batch_size=2048,
+        # Phase 1: 20k iterations. Codex: "abort if no forward gait by 20k"
+        num_learning_iterations=20_000,
     )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,
@@ -100,10 +105,7 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
-    # v34: revert gait_period to stock (1.0). v32's 1.2 destabilized
-    # the gait period. Add stand_prob=0.1 so the policy learns to
-    # stand still at zero command (v30-v33 had 0.0 → robot oscillated
-    # at zero velocity). Keep forward-biased command range.
+    # Forward-biased command for Phase 1 gait discovery.
     command=replace(
         command.k1_22dof_command,
         setup_terms={
@@ -122,8 +124,10 @@ k1_22dof_flash_sac = ExperimentConfig(
             ),
         },
     ),
-    curriculum=curriculum.k1_22dof_curriculum_fast_sac,
-    reward=reward.k1_22dof_loco_flashsac,
+    # PPO's original curriculum (initial_scale=0.1, not FastSAC's 0.5)
+    curriculum=curriculum.k1_22dof_curriculum,
+    # PPO's ORIGINAL reward — no stride_progress, no feet_air_time
+    reward=reward.k1_22dof_loco,
 )
 
 k1_22dof_flash_sac_mjwarp = ExperimentConfig(
