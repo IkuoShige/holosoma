@@ -293,10 +293,10 @@ k1_22dof_loco_flashsac = _replace(
             func="holosoma.managers.reward.terms.locomotion:StrideProgress",
             weight=2.0,
             params={
-                # v32: 0.15→0.20. At 0.15 the reward clips at 1.0 too
-                # early, removing gradient for longer strides. 0.20 keeps
-                # gradient up to ~20cm fore-aft displacement per swing.
-                "target_stride": 0.20,
+                # v33: revert to 0.15. v32 at 0.20 collapsed stride_progress
+                # by -94% — current policy strides ~0.15m, raising target
+                # to 0.20 weakened the gradient instead of extending it.
+                "target_stride": 0.15,
                 "contact_force_threshold": 5.0,
                 "command_norm_threshold": 0.1,
             },
