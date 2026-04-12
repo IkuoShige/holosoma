@@ -83,10 +83,15 @@ k1_22dof_flash_sac = ExperimentConfig(
         gamma=0.97,
         n_step=1,
         target_action_scale_rad=1.0,
-        # v31: revert to 50k iterations (~205M env steps at 4096 envs).
-        # v30 convergence data: stride_progress saturates at ~100M,
-        # tracking at ~200M. The extra 200M in v29/v30 was wasted compute.
-        num_learning_iterations=50_000,
+        num_learning_iterations=100_000,
+        # v34: tune exploration time constant for walking.
+        # Stock zeta_mu=2.0 = noise changes every 2 steps (0.04s).
+        # K1 swing phase ≈ 25 steps (0.5s). Policy needs temporally
+        # coherent exploration to discover stride patterns.
+        # zeta_mu=10 → noise persists ~10 steps (0.2s) = covers
+        # ~40% of a swing phase. Enough coherence to try a stride.
+        actor_noise_zeta_mu=10.0,
+        actor_noise_zeta_max=25,
     )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,
@@ -95,21 +100,14 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
-    # Forward-only command + K1-tuned gait clock.
-    # v32: restore gait_period=1.2±0.2 (Codex recommendation). K1's
-    # shorter legs (0.49m vs G1 0.76m) need a slower gait clock.
-    # This was tuned in v9 and dropped in v21 (G1-mirror reset).
+    # v34: revert gait_period to stock (1.0). v32's 1.2 destabilized
+    # the gait period. Add stand_prob=0.1 so the policy learns to
+    # stand still at zero command (v30-v33 had 0.0 → robot oscillated
+    # at zero velocity). Keep forward-biased command range.
     command=replace(
         command.k1_22dof_command,
         setup_terms={
             **command.k1_22dof_command.setup_terms,
-            "locomotion_gait": replace(
-                command.k1_22dof_command.setup_terms["locomotion_gait"],
-                params={
-                    "gait_period": 1.2,
-                    "gait_period_randomization_width": 0.2,
-                },
-            ),
             "locomotion_command": replace(
                 command.k1_22dof_command.setup_terms["locomotion_command"],
                 params={
@@ -119,7 +117,7 @@ k1_22dof_flash_sac = ExperimentConfig(
                         "ang_vel_yaw": [-0.2, 0.2],
                         "heading": [-3.14, 3.14],
                     },
-                    "stand_prob": 0.0,
+                    "stand_prob": 0.1,
                 },
             ),
         },

@@ -233,15 +233,9 @@ _k1_base = make_flashsac_reward(
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        # v32: stabilize gait (user: "歩き方が不安定").
-        # v30 data: action_rate=-0.16 (jerky), pose=-0.70 (body sway).
-        # Mild increases to smooth motion and reduce wobble.
-        # v31 mistake: also raised tracking_lin_vel which killed gait.
-        # This time: ONLY smoothing, no tracking change.
-        "penalty_action_rate": -0.01,  # -0.005 → -0.01 (2x, mild)
-        # Codex: pose -0.25 would be 1.5x PPO's effective upper-body
-        # penalty (-0.25*150=-37.5 vs PPO -0.5*50=-25). K1 needs arm
-        # swing for balance (no waist DOFs). Keep at -0.2.
+        # v34: revert to v30 base penalties. v31-v33 changes all degraded
+        # gait quality. v30 was visual best, return to its exact weights.
+        "penalty_action_rate": -0.005,
         "pose": -0.2,
         # v30: raise feet_phase 1.0 → 2.5 to enforce alternating gait.
         # v29 at 1.0 led to skipping/bounding — stride_progress (33%)
@@ -264,7 +258,23 @@ _k1_base = make_flashsac_reward(
 #     (2:1 air:phase). Our v22 was 2.0:4.0 (0.5:1). v23 uses 4.0:2.0
 #     to exactly match T1's 2:1 ratio while keeping absolute magnitudes
 #     similar to the v22 total gait signal.
-k1_22dof_loco_flashsac = _replace(
+# v34: patch knee pose_weights to enforce bending.
+# User reports "膝もちょっとしか曲げてない → 上体を反る". PPO base has
+# knee weight 0.01 (basically free). Raising to 1.0 anchors knee to
+# default_pose (0.4 rad = 23° bent), preventing straight-leg walking.
+# T1 upstream uses joint_deviation_knee = -0.1 for the same purpose.
+def _patch_knee_pose(base: RewardManagerCfg) -> RewardManagerCfg:
+    pose_term = base.terms["pose"]
+    pw = list(pose_term.params["pose_weights"])
+    pw[13] = 1.0  # Left_Knee_Pitch (was 0.01)
+    pw[19] = 1.0  # Right_Knee_Pitch (was 0.01)
+    return _replace(
+        base,
+        terms={**base.terms, "pose": _replace(pose_term, params={**pose_term.params, "pose_weights": pw})},
+    )
+
+
+k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
     _k1_base,
     terms={
         **_k1_base.terms,
@@ -302,6 +312,6 @@ k1_22dof_loco_flashsac = _replace(
             },
         ),
     },
-)
+))
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]
