@@ -57,19 +57,26 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
-# v21 post-mortem: all v7-v20 customizations (Kp=80, sigma=0.25,
-# target_action_scale_rad=1.0, friction override, gait_period override,
-# termination threshold, etc.) diverged from G1 FlashSAC which uses STOCK
-# defaults and works. 20 iterations of "improvements" were actually
-# 20 iterations of deviation from a working baseline. v21 reverts ALL
-# K1-specific experiment-level customizations, mirroring the
-# g1_29dof_flash_sac structure exactly (see g1/experiment.py:59-99).
-# The only K1-specific piece is the reward preset (canonical v5 derived
-# from K1 PPO, analogous to g1_29dof_loco_flashsac).
+# v28 (Codex dual-reviewed): T1-parity algo + stride reward + forward curriculum.
+# v21-v27 used G1-mirror stock defaults but K1 still shuffled. Codex diagnosis:
+# "PPO用 reward をそのまま FlashSAC に食わせると K1 では ankle/shuffle local
+# optimum に落ちる". The fix is three-fold: (1) T1-parity algo settings,
+# (2) stride-progress reward that's ankle-flick-proof, (3) forward-only
+# command curriculum to simplify the initial gait discovery.
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
-    algo=algo.flash_sac,
+    # T1-parity algo settings:
+    # - asymmetric_observation=True: critic sees linvel, actor doesn't
+    #   (fixes info leak where actor was seeing critic_obs via bridge concat)
+    # - gamma=0.97: shorter horizon, don't lock into long-term shuffle returns
+    # - n_step=1: single-step TD for less biased critic
+    algo=replace(algo.flash_sac, config=replace(
+        algo.flash_sac.config,
+        asymmetric_observation=True,
+        gamma=0.97,
+        n_step=1,
+    )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,
     terrain=terrain.terrain_locomotion_mix,
@@ -77,7 +84,26 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
-    command=command.k1_22dof_command,
+    # Forward-only command curriculum: simplify initial gait discovery.
+    # lin_vel_x=[0.4,0.8] (forward only), minimal lateral/yaw, no standing.
+    command=replace(
+        command.k1_22dof_command,
+        setup_terms={
+            **command.k1_22dof_command.setup_terms,
+            "locomotion_command": replace(
+                command.k1_22dof_command.setup_terms["locomotion_command"],
+                params={
+                    "command_ranges": {
+                        "lin_vel_x": [0.4, 0.8],
+                        "lin_vel_y": [-0.1, 0.1],
+                        "ang_vel_yaw": [-0.2, 0.2],
+                        "heading": [-3.14, 3.14],
+                    },
+                    "stand_prob": 0.0,
+                },
+            ),
+        },
+    ),
     curriculum=curriculum.k1_22dof_curriculum_fast_sac,
     reward=reward.k1_22dof_loco_flashsac,
 )

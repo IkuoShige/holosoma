@@ -233,12 +233,14 @@ _k1_base = make_flashsac_reward(
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.005,  # G1 value. Symmetry fixes vibration.
+        "penalty_action_rate": -0.005,
         "pose": -0.2,
-        # v24: revert feet_phase to 4.0 (v22 value). v23 halved it to 2.0
-        # which hurt G_r_max (29.16→23.00). feet_phase is the gait clock
-        # anchor; removing it leaves feet_air_time without structure.
-        "feet_phase": 4.0,
+        # v28 (Codex): reduce feet_phase from 4.0 → 1.0.
+        # v24 data showed feet_phase at 54% of total positive reward = the
+        # dominant shuffle attractor. Codex: "feet_phase 4.0 が shuffle を
+        # 安定化。0.5-1.0 に下げろ". v23 failed when reducing to 2.0, but
+        # v23 didn't have stride_progress or continuous feet_air_time.
+        "feet_phase": 1.0,
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
@@ -257,25 +259,32 @@ k1_22dof_loco_flashsac = _replace(
     _k1_base,
     terms={
         **_k1_base.terms,
-        # v27: fix contact detection from norm(3D)>1N to z-component>5N
-        # to match feet_phase/penalty_foothold convention.
+        # v28 (Codex dual-reviewed): three gait terms that together
+        # should break the shuffle/ankle-flick local minima:
         #
-        # v26 result: feet_air_time=0.062 per sec (predicted 0.35). 5-6x
-        # below predicted. Root cause: norm(3D)>1N was triggering on
-        # swing-phase lateral forces (torque reactions, etc.), causing
-        # spurious contact detections that reset air_time.
-        #
-        # v27 changes only the contact detection method/threshold inside
-        # FeetAirTime class. Config-side only updates the threshold param
-        # to the new default 5.0 (instead of v25/v26's 1.0).
-        #
-        # Everything else unchanged from v26: per-step continuous reward,
-        # threshold_max=0.5, weight=4.0.
+        # 1. feet_air_time (continuous, w=2.0): rewards airborne duration.
+        #    Weight reduced from 4.0 to 2.0 (Codex: don't make it sole lead).
+        # 2. stride_progress (NEW, w=2.0): rewards fore-aft foot displacement
+        #    relative to body during swing. Ankle flicks give ~0 because foot
+        #    doesn't advance. Walking strides give ~1.0 per foot per step.
+        #    This is the "ankle-flick-proof" reward we've been missing.
+        # 3. feet_phase (reduced to 1.0 in _k1_base above): gait clock.
+        #    Still provides timing structure but no longer dominates (was 54%
+        #    of total positive reward at weight 4.0).
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
-            weight=4.0,
+            weight=2.0,
             params={
                 "threshold_max": 0.5,
+                "contact_force_threshold": 5.0,
+                "command_norm_threshold": 0.1,
+            },
+        ),
+        "stride_progress": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:StrideProgress",
+            weight=2.0,
+            params={
+                "target_stride": 0.15,
                 "contact_force_threshold": 5.0,
                 "command_norm_threshold": 0.1,
             },

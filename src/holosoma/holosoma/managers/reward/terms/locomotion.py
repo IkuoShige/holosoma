@@ -482,3 +482,106 @@ class FeetAirTime(RewardTermBase):
             self._air_time.zero_()
         else:
             self._air_time[env_ids] = 0.0
+
+
+class StrideProgress(RewardTermBase):
+    """Reward forward foot displacement during swing (ankle-flick-proof).
+
+    v28: Codex-recommended reward that directly measures how far each
+    foot moves forward (in the base heading frame) relative to the body
+    during the swing phase. Unlike ``FeetAirTime`` which rewards airborne
+    duration (gameable by ankle flicks), this rewards actual stride
+    displacement — the foot must physically advance in the walk direction.
+
+    At liftoff (transition from contact to airborne), saves the foot
+    and base world positions. Each step while airborne, computes the
+    foot's forward displacement relative to the base displacement,
+    projected onto the current heading direction.
+
+    Per-step reward = sum_feet(clip(fore_aft_progress / target_stride, 0, 1) * airborne)
+
+    Ankle flick: foot stays near hip → fore_aft ≈ 0 → reward ≈ 0.
+    Walking stride: foot moves ~15cm forward relative to body → reward ≈ 1.
+
+    Params:
+        target_stride: Forward displacement (meters) at which reward
+            clips to 1.0. Default 0.15 (reasonable for K1 hip height ~0.68m).
+        contact_force_threshold: Normal-force threshold (z-axis, Newtons).
+            Default 5.0.
+        command_norm_threshold: Minimum command magnitude. Default 0.1.
+    """
+
+    def __init__(self, cfg: "RewardTermCfg", env: Any):
+        super().__init__(cfg, env)
+        params = cfg.params or {}
+        self.target_stride = float(params.get("target_stride", 0.15))
+        self.contact_force_threshold = float(params.get("contact_force_threshold", 5.0))
+        self.command_norm_threshold = float(params.get("command_norm_threshold", 0.1))
+
+        num_envs = env.num_envs
+        num_feet = int(env.feet_indices.shape[0])
+        device = env.device
+
+        # Per-foot liftoff positions (world frame).
+        self._liftoff_foot_pos = torch.zeros(num_envs, num_feet, 3, dtype=torch.float32, device=device)
+        # Per-foot liftoff base position (world frame, needed for relative displacement).
+        self._liftoff_base_pos = torch.zeros(num_envs, num_feet, 3, dtype=torch.float32, device=device)
+        # Previous contact state.
+        self._prev_contact = torch.ones(num_envs, num_feet, dtype=torch.bool, device=device)
+
+    def __call__(self, env: Any, **kwargs: Any) -> torch.Tensor:
+        # Contact detection (z-component, matching FeetAirTime v27).
+        normal_force = env.simulator.contact_forces[:, env.feet_indices, 2]  # [E, F]
+        current_contact = normal_force > self.contact_force_threshold
+        airborne = (~current_contact).float()
+
+        # Detect liftoff: was in contact, now airborne.
+        liftoff = (~current_contact) & self._prev_contact  # [E, F]
+
+        # Current positions.
+        foot_pos = env.simulator._rigid_body_pos[:, env.feet_indices, :]  # [E, F, 3]
+        base_pos = env.simulator.robot_root_states[:, :3]  # [E, 3]
+
+        # At liftoff: save foot and base world positions.
+        for f_idx in range(foot_pos.shape[1]):
+            mask = liftoff[:, f_idx]
+            if mask.any():
+                self._liftoff_foot_pos[mask, f_idx] = foot_pos[mask, f_idx]
+                self._liftoff_base_pos[mask, f_idx] = base_pos[mask]
+
+        # Relative foot displacement: how far foot moved minus how far
+        # base moved since liftoff. Positive = foot advanced further.
+        foot_delta = foot_pos - self._liftoff_foot_pos  # [E, F, 3]
+        base_delta = base_pos.unsqueeze(1) - self._liftoff_base_pos  # [E, F, 3]
+        relative_delta = foot_delta - base_delta  # [E, F, 3]
+
+        # Project onto current base heading direction.
+        fwd = quat_apply(env.base_quat, base_forward_vector(env), w_last=True)  # [E, 3]
+        heading_x = fwd[:, 0].unsqueeze(1)  # [E, 1]
+        heading_y = fwd[:, 1].unsqueeze(1)  # [E, 1]
+        fore_aft = relative_delta[:, :, 0] * heading_x + relative_delta[:, :, 1] * heading_y  # [E, F]
+
+        # Reward: normalized progress clipped to [0, 1], only while airborne.
+        progress = torch.clamp(fore_aft / self.target_stride, min=0.0, max=1.0)
+        per_foot_reward = progress * airborne
+        reward = torch.sum(per_foot_reward, dim=1)  # [E]
+
+        # Command gate.
+        commands = env.command_manager.commands
+        cmd_norm = torch.norm(commands[:, :3], dim=1)
+        reward = reward * (cmd_norm > self.command_norm_threshold).float()
+
+        # Update state.
+        self._prev_contact = current_contact
+
+        return reward
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None or env_ids.numel() == 0:
+            self._liftoff_foot_pos.zero_()
+            self._liftoff_base_pos.zero_()
+            self._prev_contact[:] = True
+        else:
+            self._liftoff_foot_pos[env_ids] = 0.0
+            self._liftoff_base_pos[env_ids] = 0.0
+            self._prev_contact[env_ids] = True
