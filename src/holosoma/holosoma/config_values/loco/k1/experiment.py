@@ -95,8 +95,9 @@ k1_22dof_flash_sac = ExperimentConfig(
         buffer_min_length=32_768,
         updates_per_interaction_step=1.0,
         sample_batch_size=2048,
-        # Phase 1: 20k iterations. Codex: "abort if no forward gait by 20k"
-        num_learning_iterations=20_000,
+        # v35 at 20k showed all metrics in steep growth (not converged).
+        # temperature healthy at 0.0042 (no collapse). Extend to 100k.
+        num_learning_iterations=100_000,
     )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,
