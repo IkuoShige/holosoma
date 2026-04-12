@@ -65,7 +65,12 @@ k1_22dof_fast_sac = ExperimentConfig(
 # command curriculum to simplify the initial gait discovery.
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
-    training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager"),
+    # v31: num_envs 4096→1024 to match FlashSAC upstream recommendation.
+    # FlashSAC uses 1024 for all GPU simulators (IsaacLab, MuJoCo Playground).
+    # 4096 was holosoma's TrainingConfig default, not FlashSAC-tuned.
+    # At batch_size=2048, 1024 envs gives proper replay ratio.
+    # 50k iters × 1024 envs = ~51M env steps (sufficient per v30 convergence data).
+    training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager", num_envs=1024),
     # v29: raise target_action_scale_rad 0.5→1.0 (PPO uses 0.85 rad hip offset,
     # 0.5 was a hard mechanical ceiling) + extend training to 100M env steps.
     # v16-v17 tried scale changes with no effect because the policy was in
@@ -78,7 +83,10 @@ k1_22dof_flash_sac = ExperimentConfig(
         gamma=0.97,
         n_step=1,
         target_action_scale_rad=1.0,
-        num_learning_iterations=100_000,
+        # v31: revert to 50k iterations (~205M env steps at 4096 envs).
+        # v30 convergence data: stride_progress saturates at ~100M,
+        # tracking at ~200M. The extra 200M in v29/v30 was wasted compute.
+        num_learning_iterations=50_000,
     )),
     simulator=simulator.isaacsim,
     robot=robot.k1_22dof,

@@ -233,8 +233,15 @@ _k1_base = make_flashsac_reward(
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.005,
-        "pose": -0.2,
+        # v31: raise action_rate penalty -0.005 → -0.02 to smooth gait.
+        "penalty_action_rate": -0.02,
+        # v31: raise pose penalty -0.2 → -0.3 for stability.
+        "pose": -0.3,
+        # v31: raise tracking_lin_vel 2.0 → 4.0 for PPO-like speed tracking.
+        # v30 data: avg velocity error ±0.23 m/s (62% tracking at 0.6 cmd).
+        # PPO achieves ~100%. Making tracking the dominant reward pushes
+        # the policy to match commanded speed, not just walk forward.
+        "tracking_lin_vel": 4.0,
         # v30: raise feet_phase 1.0 → 2.5 to enforce alternating gait.
         # v29 at 1.0 led to skipping/bounding — stride_progress (33%)
         # dominated feet_phase (14%) so both-feet-airborne was optimal.
