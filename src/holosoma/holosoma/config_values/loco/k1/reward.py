@@ -233,15 +233,16 @@ _k1_base = make_flashsac_reward(
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        # v31: raise action_rate penalty -0.005 → -0.02 to smooth gait.
-        "penalty_action_rate": -0.02,
-        # v31: raise pose penalty -0.2 → -0.3 for stability.
-        "pose": -0.3,
-        # v31: raise tracking_lin_vel 2.0 → 4.0 for PPO-like speed tracking.
-        # v30 data: avg velocity error ±0.23 m/s (62% tracking at 0.6 cmd).
-        # PPO achieves ~100%. Making tracking the dominant reward pushes
-        # the policy to match commanded speed, not just walk forward.
-        "tracking_lin_vel": 4.0,
+        # v32: stabilize gait (user: "歩き方が不安定").
+        # v30 data: action_rate=-0.16 (jerky), pose=-0.70 (body sway).
+        # Mild increases to smooth motion and reduce wobble.
+        # v31 mistake: also raised tracking_lin_vel which killed gait.
+        # This time: ONLY smoothing, no tracking change.
+        "penalty_action_rate": -0.01,  # -0.005 → -0.01 (2x, mild)
+        # Codex: pose -0.25 would be 1.5x PPO's effective upper-body
+        # penalty (-0.25*150=-37.5 vs PPO -0.5*50=-25). K1 needs arm
+        # swing for balance (no waist DOFs). Keep at -0.2.
+        "pose": -0.2,
         # v30: raise feet_phase 1.0 → 2.5 to enforce alternating gait.
         # v29 at 1.0 led to skipping/bounding — stride_progress (33%)
         # dominated feet_phase (14%) so both-feet-airborne was optimal.
@@ -292,7 +293,10 @@ k1_22dof_loco_flashsac = _replace(
             func="holosoma.managers.reward.terms.locomotion:StrideProgress",
             weight=2.0,
             params={
-                "target_stride": 0.15,
+                # v32: 0.15→0.20. At 0.15 the reward clips at 1.0 too
+                # early, removing gradient for longer strides. 0.20 keeps
+                # gradient up to ~20cm fore-aft displacement per swing.
+                "target_stride": 0.20,
                 "contact_force_threshold": 5.0,
                 "command_norm_threshold": 0.1,
             },

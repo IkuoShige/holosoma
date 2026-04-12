@@ -95,12 +95,21 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
-    # Forward-only command curriculum: simplify initial gait discovery.
-    # lin_vel_x=[0.4,0.8] (forward only), minimal lateral/yaw, no standing.
+    # Forward-only command + K1-tuned gait clock.
+    # v32: restore gait_period=1.2±0.2 (Codex recommendation). K1's
+    # shorter legs (0.49m vs G1 0.76m) need a slower gait clock.
+    # This was tuned in v9 and dropped in v21 (G1-mirror reset).
     command=replace(
         command.k1_22dof_command,
         setup_terms={
             **command.k1_22dof_command.setup_terms,
+            "locomotion_gait": replace(
+                command.k1_22dof_command.setup_terms["locomotion_gait"],
+                params={
+                    "gait_period": 1.2,
+                    "gait_period_randomization_width": 0.2,
+                },
+            ),
             "locomotion_command": replace(
                 command.k1_22dof_command.setup_terms["locomotion_command"],
                 params={
