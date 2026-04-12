@@ -235,12 +235,13 @@ _k1_base = make_flashsac_reward(
         "penalty_orientation": -1.0,
         "penalty_action_rate": -0.005,
         "pose": -0.2,
-        # v28 (Codex): reduce feet_phase from 4.0 → 1.0.
-        # v24 data showed feet_phase at 54% of total positive reward = the
-        # dominant shuffle attractor. Codex: "feet_phase 4.0 が shuffle を
-        # 安定化。0.5-1.0 に下げろ". v23 failed when reducing to 2.0, but
-        # v23 didn't have stride_progress or continuous feet_air_time.
-        "feet_phase": 1.0,
+        # v30: raise feet_phase 1.0 → 2.5 to enforce alternating gait.
+        # v29 at 1.0 led to skipping/bounding — stride_progress (33%)
+        # dominated feet_phase (14%) so both-feet-airborne was optimal.
+        # 2.5 makes the phase clock stronger than stride_progress (2.0)
+        # to enforce left-right alternation while stride_progress still
+        # provides forward-displacement gradient.
+        "feet_phase": 2.5,
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
