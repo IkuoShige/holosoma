@@ -57,46 +57,40 @@ k1_22dof_fast_sac = ExperimentConfig(
     ),
 )
 
-# v35: PPO original reward + FlashSAC exploration-tuned + short buffer.
+# v36: PPO-compatible FlashSAC reward + exploration-tuned.
 #
-# Thesis: "FlashSAC の探索設計を task に合わせれば、PPO の reward が
-# そのまま動くはず。FlashSAC 専用の reward shaping は workaround。"
+# v35 proved: PPO's raw penalties (-2.0, -10.0) kill FlashSAC even
+# with exploration tuning (100% termination, temperature collapse by 40M).
+# v28-v34 proved: FlashSAC-specific rewards (stride_progress, feet_air_time)
+# can walk but diverge from PPO quality.
 #
-# Phase 1 (this config): on-policy-like FlashSAC.
-#   - PPO の ORIGINAL reward (k1_22dof_loco) をそのまま使う
-#   - PPO の curriculum (initial_scale=0.1, penalties 段階的)
-#   - Short buffer (262k) = 最新データのみ保持 (on-policy 的)
-#   - temp_target_sigma=0.25 (collapse 防止, entropy target +0.72)
-#   - temp_initial_value=0.03 (初期探索 3x 強化)
-#   - actor_noise_zeta_mu=1.2 (低い = 長い noise repetition)
-#   - UTD=1.0 (on-policy 寄り)
-#   - Forward-biased command + stand_prob=0.1
+# v36 middle ground: PPO reward STRUCTURE (same terms, same positive
+# weights) but penalties reduced to 1/10 of PPO. No FlashSAC-specific
+# reward terms. This is "PPO-compatible" — same objective, different
+# penalty tolerance for bounded exploration.
 #
-# Abort criteria: 3k iter で temperature < 0.002 かつ forward progress 低下
-# Transition to Phase 2: 10-15k iter で歩行確認後, buffer/UTD を off-policy に
+# Exploration: keep v35's working settings (sigma=0.25, zeta_mu=1.2,
+# temp_initial=0.03) but restore standard buffer (10M). Short buffer
+# (262k in v35) caused reward oscillation and instability.
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager", num_envs=1024),
     algo=replace(algo.flash_sac, config=replace(
         algo.flash_sac.config,
-        # T1-parity critic settings
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
-        # Action scale for PPO-level hip amplitude
         target_action_scale_rad=1.0,
-        # Exploration: on-policy-like
+        # Exploration from v35 (working: no collapse until 40M)
         temp_initial_value=0.03,
         temp_target_sigma=0.25,
         actor_noise_zeta_mu=1.2,
         actor_noise_zeta_max=25,
-        # Short buffer: ~256 vector steps. Forces learning from recent data.
-        buffer_max_length=262_144,
-        buffer_min_length=32_768,
-        updates_per_interaction_step=1.0,
+        # Standard buffer (v35's 262k was unstable)
+        buffer_max_length=10_000_000,
+        buffer_min_length=100_000,
+        updates_per_interaction_step=2.0,
         sample_batch_size=2048,
-        # v35 at 20k showed all metrics in steep growth (not converged).
-        # temperature healthy at 0.0042 (no collapse). Extend to 100k.
         num_learning_iterations=100_000,
     )),
     simulator=simulator.isaacsim,
@@ -106,7 +100,6 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
-    # Forward-biased command for Phase 1 gait discovery.
     command=replace(
         command.k1_22dof_command,
         setup_terms={
@@ -125,10 +118,9 @@ k1_22dof_flash_sac = ExperimentConfig(
             ),
         },
     ),
-    # PPO's original curriculum (initial_scale=0.1, not FastSAC's 0.5)
+    # PPO curriculum (initial_scale=0.1) — start with weak penalties
     curriculum=curriculum.k1_22dof_curriculum,
-    # PPO's ORIGINAL reward — no stride_progress, no feet_air_time
-    reward=reward.k1_22dof_loco,
+    reward=reward.k1_22dof_loco_flashsac,
 )
 
 k1_22dof_flash_sac_mjwarp = ExperimentConfig(

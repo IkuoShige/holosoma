@@ -227,91 +227,50 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 #   v12 (current): tighten tracking_sigma 0.25→0.1 to demand closer
 #       velocity tracking. At sigma=0.25, 0.354m/s already gives 91%
 #       reward. sigma=0.1 makes that only 81% → policy must stride more.
-_k1_base = make_flashsac_reward(
+# v36: PPO-compatible FlashSAC reward.
+#
+# PPO reward STRUCTURE preserved (same terms, same positive weights).
+# Penalties reduced to 1/10 of PPO — tolerable for FlashSAC's bounded
+# exploration while still providing the same optimization objective.
+# NO FlashSAC-specific terms (no stride_progress, no feet_air_time).
+# alive kept (PPO has it; v5's drop was a FlashSAC workaround).
+#
+# PPO values → v36 values:
+#   tracking_lin_vel:     2.0 → 2.0    (keep)
+#   tracking_ang_vel:     1.5 → 1.5    (keep)
+#   feet_phase:           5.0 → 5.0    (keep PPO value!)
+#   alive:                1.0 → 1.0    (keep)
+#   pose:                -0.5 → -0.5   (keep, with PPO's pose_weights)
+#   penalty_action_rate: -2.0 → -0.2   (1/10)
+#   penalty_orientation:-10.0 → -1.0   (1/10)
+#   penalty_ang_vel_xy:  -1.0 → -0.1   (1/10)
+#   penalty_close_feet: -10.0 → -1.0   (1/10)
+#   penalty_feet_ori:    -5.0 → -0.5   (1/10)
+k1_22dof_loco_flashsac = _replace(
     k1_22dof_loco,
-    upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
-    weight_overrides={
-        "penalty_ang_vel_xy": -0.05,
-        "penalty_orientation": -1.0,
-        # v34: revert to v30 base penalties. v31-v33 changes all degraded
-        # gait quality. v30 was visual best, return to its exact weights.
-        "penalty_action_rate": -0.005,
-        "pose": -0.2,
-        # v30: raise feet_phase 1.0 → 2.5 to enforce alternating gait.
-        # v29 at 1.0 led to skipping/bounding — stride_progress (33%)
-        # dominated feet_phase (14%) so both-feet-airborne was optimal.
-        # 2.5 makes the phase clock stronger than stride_progress (2.0)
-        # to enforce left-right alternation while stride_progress still
-        # provides forward-displacement gradient.
-        "feet_phase": 2.5,
-        "penalty_feet_ori": -0.5,
-        "penalty_close_feet_xy": -1.0,
+    terms={
+        **k1_22dof_loco.terms,
+        "penalty_action_rate": _replace(
+            k1_22dof_loco.terms["penalty_action_rate"],
+            weight=-0.2,
+        ),
+        "penalty_orientation": _replace(
+            k1_22dof_loco.terms["penalty_orientation"],
+            weight=-1.0,
+        ),
+        "penalty_ang_vel_xy": _replace(
+            k1_22dof_loco.terms["penalty_ang_vel_xy"],
+            weight=-0.1,
+        ),
+        "penalty_close_feet_xy": _replace(
+            k1_22dof_loco.terms["penalty_close_feet_xy"],
+            weight=-1.0,
+        ),
+        "penalty_feet_ori": _replace(
+            k1_22dof_loco.terms["penalty_feet_ori"],
+            weight=-0.5,
+        ),
     },
 )
-
-
-# v22: added feet_air_time at weight 2.0 (T1 default). Evidence of
-#     effect: G_r_max 21.6→29.2, mean_bias magnitude up 29%. But not
-#     enough gradient signal to overcome feet_phase (weight 4.0 was
-#     drowning it out). User: "変わらん" (no visible change).
-# v23: match T1's reward ratio. T1 has feet_air_time=2.0, feet_phase=1.0
-#     (2:1 air:phase). Our v22 was 2.0:4.0 (0.5:1). v23 uses 4.0:2.0
-#     to exactly match T1's 2:1 ratio while keeping absolute magnitudes
-#     similar to the v22 total gait signal.
-# v34: patch knee pose_weights to enforce bending.
-# User reports "膝もちょっとしか曲げてない → 上体を反る". PPO base has
-# knee weight 0.01 (basically free). Raising to 1.0 anchors knee to
-# default_pose (0.4 rad = 23° bent), preventing straight-leg walking.
-# T1 upstream uses joint_deviation_knee = -0.1 for the same purpose.
-def _patch_knee_pose(base: RewardManagerCfg) -> RewardManagerCfg:
-    pose_term = base.terms["pose"]
-    pw = list(pose_term.params["pose_weights"])
-    pw[13] = 1.0  # Left_Knee_Pitch (was 0.01)
-    pw[19] = 1.0  # Right_Knee_Pitch (was 0.01)
-    return _replace(
-        base,
-        terms={**base.terms, "pose": _replace(pose_term, params={**pose_term.params, "pose_weights": pw})},
-    )
-
-
-k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
-    _k1_base,
-    terms={
-        **_k1_base.terms,
-        # v28 (Codex dual-reviewed): three gait terms that together
-        # should break the shuffle/ankle-flick local minima:
-        #
-        # 1. feet_air_time (continuous, w=2.0): rewards airborne duration.
-        #    Weight reduced from 4.0 to 2.0 (Codex: don't make it sole lead).
-        # 2. stride_progress (NEW, w=2.0): rewards fore-aft foot displacement
-        #    relative to body during swing. Ankle flicks give ~0 because foot
-        #    doesn't advance. Walking strides give ~1.0 per foot per step.
-        #    This is the "ankle-flick-proof" reward we've been missing.
-        # 3. feet_phase (reduced to 1.0 in _k1_base above): gait clock.
-        #    Still provides timing structure but no longer dominates (was 54%
-        #    of total positive reward at weight 4.0).
-        "feet_air_time": RewardTermCfg(
-            func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
-            weight=2.0,
-            params={
-                "threshold_max": 0.5,
-                "contact_force_threshold": 5.0,
-                "command_norm_threshold": 0.1,
-            },
-        ),
-        "stride_progress": RewardTermCfg(
-            func="holosoma.managers.reward.terms.locomotion:StrideProgress",
-            weight=2.0,
-            params={
-                # v33: revert to 0.15. v32 at 0.20 collapsed stride_progress
-                # by -94% — current policy strides ~0.15m, raising target
-                # to 0.20 weakened the gradient instead of extending it.
-                "target_stride": 0.15,
-                "contact_force_threshold": 5.0,
-                "command_norm_threshold": 0.1,
-            },
-        ),
-    },
-))
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]
