@@ -75,24 +75,25 @@ k1_22dof_fast_sac = ExperimentConfig(
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager", num_envs=1024),
-    # v38: v34 reward (歩けた) + v35 exploration (collapse遅延) + short buffer.
-    # v35 の short buffer は PPO raw reward と組み合わせて失敗したが、
-    # reward のせいか buffer のせいか未分離。v34 reward で再テスト。
+    # v39: v34 base + moderate exploration tuning.
+    # v34 walked with stock exploration (sigma=0.15, zeta=2, buffer 10M).
+    # v38 failed: sigma=0.25 + zeta_mu=1.2 was too aggressive → legs split.
+    # v39: halfway between v34 and v35 exploration. Standard buffer.
     algo=replace(algo.flash_sac, config=replace(
         algo.flash_sac.config,
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
         target_action_scale_rad=1.0,
-        # v35 exploration (delayed collapse to 40M)
-        temp_initial_value=0.03,
-        temp_target_sigma=0.25,
-        actor_noise_zeta_mu=1.2,
-        actor_noise_zeta_max=25,
-        # Short buffer: on-policy-like (v35 Phase 1)
-        buffer_max_length=262_144,
-        buffer_min_length=32_768,
-        updates_per_interaction_step=1.0,
+        # Moderate exploration: between v34 stock and v35 aggressive
+        temp_initial_value=0.02,       # v34=0.01, v35=0.03
+        temp_target_sigma=0.20,        # v34=0.15, v35=0.25
+        actor_noise_zeta_mu=1.5,       # v34=2.0(stock), v35=1.2
+        actor_noise_zeta_max=20,       # v34=16(stock), v35=25
+        # Standard buffer (v38's 262k caused splits)
+        buffer_max_length=10_000_000,
+        buffer_min_length=100_000,
+        updates_per_interaction_step=2.0,
         sample_batch_size=2048,
         num_learning_iterations=100_000,
     )),
