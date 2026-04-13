@@ -236,20 +236,28 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 # alive kept (PPO has it; v5's drop was a FlashSAC workaround).
 #
 # PPO values → v36 values:
-#   tracking_lin_vel:     2.0 → 2.0    (keep)
-#   tracking_ang_vel:     1.5 → 1.5    (keep)
-#   feet_phase:           5.0 → 5.0    (keep PPO value!)
-#   alive:                1.0 → 1.0    (keep)
-#   pose:                -0.5 → -0.5   (keep, with PPO's pose_weights)
-#   penalty_action_rate: -2.0 → -0.2   (1/10)
-#   penalty_orientation:-10.0 → -1.0   (1/10)
-#   penalty_ang_vel_xy:  -1.0 → -0.1   (1/10)
-#   penalty_close_feet: -10.0 → -1.0   (1/10)
-#   penalty_feet_ori:    -5.0 → -0.5   (1/10)
+# v37: PPO-compatible with minimal FlashSAC adaptations.
+#
+# v36 proved: alive=1.0 + feet_phase=5.0 causes leg splitting in
+# FlashSAC (lazy attractor + strong clock = oscillate while standing).
+# This is the same issue canonical v5 identified and solved by dropping
+# alive. It is a STRUCTURAL incompatibility, not a tuning issue.
+#
+# v37 = PPO reward with exactly 2 adaptations:
+#   1. alive: DROP (FlashSAC structural requirement)
+#   2. feet_phase: 5.0 → 3.0 (reduce clock dominance, still stronger
+#      than v28-v34's 2.5, closer to PPO's 5.0)
+#   3. Penalties: 1/10 of PPO (same as v36)
+#   4. Everything else: PPO values (tracking, pose, pose_weights)
+_v37_terms = {k: v for k, v in k1_22dof_loco.terms.items() if k != "alive"}
 k1_22dof_loco_flashsac = _replace(
     k1_22dof_loco,
     terms={
-        **k1_22dof_loco.terms,
+        **_v37_terms,
+        "feet_phase": _replace(
+            k1_22dof_loco.terms["feet_phase"],
+            weight=3.0,
+        ),
         "penalty_action_rate": _replace(
             k1_22dof_loco.terms["penalty_action_rate"],
             weight=-0.2,
