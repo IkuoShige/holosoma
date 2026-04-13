@@ -104,6 +104,11 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
+    # v41: broaden command range for standing + pivot turn.
+    # - stand_prob: 0.1 → 0.2 (PPO default, more standing practice)
+    # - ang_vel_yaw: [-0.2,0.2] → [-1.0,1.0] (enable pivot turns)
+    # - lin_vel_x: [0.4,0.8] → [-0.5,1.0] (include backward + faster)
+    # - lin_vel_y: [-0.1,0.1] → [-0.5,0.5] (lateral walking)
     command=replace(
         command.k1_22dof_command,
         setup_terms={
@@ -112,12 +117,12 @@ k1_22dof_flash_sac = ExperimentConfig(
                 command.k1_22dof_command.setup_terms["locomotion_command"],
                 params={
                     "command_ranges": {
-                        "lin_vel_x": [0.4, 0.8],
-                        "lin_vel_y": [-0.1, 0.1],
-                        "ang_vel_yaw": [-0.2, 0.2],
+                        "lin_vel_x": [-0.5, 1.0],
+                        "lin_vel_y": [-0.5, 0.5],
+                        "ang_vel_yaw": [-1.0, 1.0],
                         "heading": [-3.14, 3.14],
                     },
-                    "stand_prob": 0.1,
+                    "stand_prob": 0.2,
                 },
             ),
         },
