@@ -244,7 +244,12 @@ _k1_base = make_flashsac_reward(
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
-        "penalty_orientation": -1.0,
+        # v40: -1.0 → -3.0 to reduce upper body backward lean.
+        # v39 pose=-0.97 (2.2x v34) = policy leans back to compensate
+        # for forward stride without waist DOFs. PPO uses -10.0.
+        # v36-v37 failed at -1.0 but that was with alive=1.0 + feet_phase=5.0.
+        # v40 tests orientation alone with v34 reward base.
+        "penalty_orientation": -3.0,
         "penalty_action_rate": -0.005,
         "pose": -0.2,
         "feet_phase": 2.5,
