@@ -75,21 +75,24 @@ k1_22dof_fast_sac = ExperimentConfig(
 k1_22dof_flash_sac = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_manager", num_envs=1024),
+    # v38: v34 reward (歩けた) + v35 exploration (collapse遅延) + short buffer.
+    # v35 の short buffer は PPO raw reward と組み合わせて失敗したが、
+    # reward のせいか buffer のせいか未分離。v34 reward で再テスト。
     algo=replace(algo.flash_sac, config=replace(
         algo.flash_sac.config,
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
         target_action_scale_rad=1.0,
-        # Exploration from v35 (working: no collapse until 40M)
+        # v35 exploration (delayed collapse to 40M)
         temp_initial_value=0.03,
         temp_target_sigma=0.25,
         actor_noise_zeta_mu=1.2,
         actor_noise_zeta_max=25,
-        # Standard buffer (v35's 262k was unstable)
-        buffer_max_length=10_000_000,
-        buffer_min_length=100_000,
-        updates_per_interaction_step=2.0,
+        # Short buffer: on-policy-like (v35 Phase 1)
+        buffer_max_length=262_144,
+        buffer_min_length=32_768,
+        updates_per_interaction_step=1.0,
         sample_batch_size=2048,
         num_learning_iterations=100_000,
     )),

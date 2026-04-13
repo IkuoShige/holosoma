@@ -236,49 +236,59 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 # alive kept (PPO has it; v5's drop was a FlashSAC workaround).
 #
 # PPO values → v36 values:
-# v37: PPO-compatible with minimal FlashSAC adaptations.
-#
-# v36 proved: alive=1.0 + feet_phase=5.0 causes leg splitting in
-# FlashSAC (lazy attractor + strong clock = oscillate while standing).
-# This is the same issue canonical v5 identified and solved by dropping
-# alive. It is a STRUCTURAL incompatibility, not a tuning issue.
-#
-# v37 = PPO reward with exactly 2 adaptations:
-#   1. alive: DROP (FlashSAC structural requirement)
-#   2. feet_phase: 5.0 → 3.0 (reduce clock dominance, still stronger
-#      than v28-v34's 2.5, closer to PPO's 5.0)
-#   3. Penalties: 1/10 of PPO (same as v36)
-#   4. Everything else: PPO values (tracking, pose, pose_weights)
-_v37_terms = {k: v for k, v in k1_22dof_loco.terms.items() if k != "alive"}
-k1_22dof_loco_flashsac = _replace(
+# v38: restore v34 reward (canonical v5 + stride_progress + feet_air_time).
+# v34 is the only config that achieved stable walking.
+# Combined with v35's exploration tuning + short buffer.
+_k1_base = make_flashsac_reward(
     k1_22dof_loco,
-    terms={
-        **_v37_terms,
-        "feet_phase": _replace(
-            k1_22dof_loco.terms["feet_phase"],
-            weight=3.0,
-        ),
-        "penalty_action_rate": _replace(
-            k1_22dof_loco.terms["penalty_action_rate"],
-            weight=-0.2,
-        ),
-        "penalty_orientation": _replace(
-            k1_22dof_loco.terms["penalty_orientation"],
-            weight=-1.0,
-        ),
-        "penalty_ang_vel_xy": _replace(
-            k1_22dof_loco.terms["penalty_ang_vel_xy"],
-            weight=-0.1,
-        ),
-        "penalty_close_feet_xy": _replace(
-            k1_22dof_loco.terms["penalty_close_feet_xy"],
-            weight=-1.0,
-        ),
-        "penalty_feet_ori": _replace(
-            k1_22dof_loco.terms["penalty_feet_ori"],
-            weight=-0.5,
-        ),
+    upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
+    weight_overrides={
+        "penalty_ang_vel_xy": -0.05,
+        "penalty_orientation": -1.0,
+        "penalty_action_rate": -0.005,
+        "pose": -0.2,
+        "feet_phase": 2.5,
+        "penalty_feet_ori": -0.5,
+        "penalty_close_feet_xy": -1.0,
     },
 )
+
+
+def _patch_knee_pose(base: RewardManagerCfg) -> RewardManagerCfg:
+    """v34: knee pose_weight 0.01→1.0 to enforce bent-knee walking."""
+    pose_term = base.terms["pose"]
+    pw = list(pose_term.params["pose_weights"])
+    pw[13] = 1.0  # Left_Knee_Pitch
+    pw[19] = 1.0  # Right_Knee_Pitch
+    return _replace(
+        base,
+        terms={**base.terms, "pose": _replace(pose_term, params={**pose_term.params, "pose_weights": pw})},
+    )
+
+
+k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "feet_air_time": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
+            weight=2.0,
+            params={
+                "threshold_max": 0.5,
+                "contact_force_threshold": 5.0,
+                "command_norm_threshold": 0.1,
+            },
+        ),
+        "stride_progress": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:StrideProgress",
+            weight=2.0,
+            params={
+                "target_stride": 0.15,
+                "contact_force_threshold": 5.0,
+                "command_norm_threshold": 0.1,
+            },
+        ),
+    },
+))
 
 __all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]
