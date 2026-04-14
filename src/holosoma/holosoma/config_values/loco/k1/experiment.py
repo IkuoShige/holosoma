@@ -84,10 +84,8 @@ k1_22dof_flash_sac = ExperimentConfig(
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
-        # v42: per-joint scaling (FastSAC port). -1.0 = sentinel for
-        # per-joint mode. Gives Hip_Pitch 11.2x (vs uniform 4.0x),
-        # matching FastSAC's authority that enables PPO-level penalties.
-        target_action_scale_rad=-1.0,
+        # v43: revert to uniform scaling (v42 per-joint caused thrashing).
+        target_action_scale_rad=1.0,
         # v39 exploration (walked stably)
         temp_initial_value=0.02,
         temp_target_sigma=0.20,
@@ -106,11 +104,10 @@ k1_22dof_flash_sac = ExperimentConfig(
     action=action.k1_22dof_joint_pos,
     termination=termination.k1_22dof_termination,
     randomization=randomization.k1_22dof_randomization,
-    # v41: broaden command range for standing + pivot turn.
-    # - stand_prob: 0.1 → 0.2 (PPO default, more standing practice)
-    # - ang_vel_yaw: [-0.2,0.2] → [-1.0,1.0] (enable pivot turns)
-    # - lin_vel_x: [0.4,0.8] → [-0.5,1.0] (include backward + faster)
-    # - lin_vel_y: [-0.1,0.1] → [-0.5,0.5] (lateral walking)
+    # v43: v39 forward-only command + stand_prob 0.1→0.3.
+    # v39's zero-velocity oscillation is from insufficient standing
+    # practice. Fix by increasing stand_prob WITHOUT broadening
+    # command range (v41 showed all-at-once broadening degrades gait).
     command=replace(
         command.k1_22dof_command,
         setup_terms={
@@ -119,12 +116,12 @@ k1_22dof_flash_sac = ExperimentConfig(
                 command.k1_22dof_command.setup_terms["locomotion_command"],
                 params={
                     "command_ranges": {
-                        "lin_vel_x": [-0.5, 1.0],
-                        "lin_vel_y": [-0.5, 0.5],
-                        "ang_vel_yaw": [-1.0, 1.0],
+                        "lin_vel_x": [0.4, 0.8],
+                        "lin_vel_y": [-0.1, 0.1],
+                        "ang_vel_yaw": [-0.2, 0.2],
                         "heading": [-3.14, 3.14],
                     },
-                    "stand_prob": 0.2,
+                    "stand_prob": 0.3,
                 },
             ),
         },
