@@ -243,12 +243,9 @@ _k1_base = make_flashsac_reward(
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        # v44: -0.005 → -0.02. User: "足の動きがなめらかじゃない",
-        # "立っているだけで関節が動いたり動かなかったり". -0.005 is too
-        # weak to penalize small jittery actions. v31 tried -0.02 at
-        # different conditions (4096 envs, sigma=0.25) and it collapsed
-        # stride. v44 tests at 1024 envs + sigma=0.20.
-        "penalty_action_rate": -0.02,
+        # v46: revert to -0.005 (v39 value). v44's -0.02 didn't fix
+        # standing oscillation and v45 with stand_still=-2.0 killed walking.
+        "penalty_action_rate": -0.005,
         "pose": -0.2,
         "feet_phase": 2.5,
         "penalty_feet_ori": -0.5,
@@ -291,12 +288,10 @@ k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
                 "command_norm_threshold": 0.1,
             },
         ),
-        # v45: penalize joint movement at zero command. Directly tells
-        # policy "don't move when standing." Only active when cmd_norm<0.1.
-        # Walking is completely unaffected.
+        # v46: mild stand_still penalty. v45 at -2.0 killed walking.
         "penalty_stand_still": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_stand_still",
-            weight=-2.0,
+            weight=-0.5,
             params={"command_threshold": 0.1},
         ),
     },
