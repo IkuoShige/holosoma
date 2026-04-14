@@ -288,10 +288,10 @@ k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
                 "command_norm_threshold": 0.1,
             },
         ),
-        # v46: mild stand_still penalty. v45 at -2.0 killed walking.
+        # v47: -0.5 improved but not enough. -2.0 killed walking. Try -1.0.
         "penalty_stand_still": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:penalty_stand_still",
-            weight=-0.5,
+            weight=-1.0,
             params={"command_threshold": 0.1},
         ),
     },
