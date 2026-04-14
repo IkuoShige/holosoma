@@ -115,10 +115,11 @@ k1_22dof_flash_sac = ExperimentConfig(
             "locomotion_command": replace(
                 command.k1_22dof_command.setup_terms["locomotion_command"],
                 params={
+                    # v48: full range (PPO default).
                     "command_ranges": {
-                        "lin_vel_x": [0.4, 0.8],
-                        "lin_vel_y": [-0.1, 0.1],
-                        "ang_vel_yaw": [-0.2, 0.2],
+                        "lin_vel_x": [-1.0, 1.0],
+                        "lin_vel_y": [-1.0, 1.0],
+                        "ang_vel_yaw": [-1.0, 1.0],
                         "heading": [-3.14, 3.14],
                     },
                     "stand_prob": 0.3,
