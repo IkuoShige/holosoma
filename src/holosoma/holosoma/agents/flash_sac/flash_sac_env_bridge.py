@@ -37,6 +37,7 @@ import numpy as np
 import torch
 from gymnasium.vector import VectorEnv
 from gymnasium.vector.utils import batch_space
+from loguru import logger
 
 from holosoma.envs.base_task.base_task import BaseTask
 
