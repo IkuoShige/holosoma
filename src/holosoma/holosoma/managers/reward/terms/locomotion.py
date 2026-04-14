@@ -394,6 +394,27 @@ def alive(env) -> torch.Tensor:
     return torch.ones(env.num_envs, dtype=torch.float, device=env.device)
 
 
+def penalty_stand_still(env, command_threshold: float = 0.1) -> torch.Tensor:
+    """Penalize joint deviation from default pose when command is near zero.
+
+    v45: directly tells the policy "don't move when commanded to stand."
+    Only active when ||cmd[:3]|| < command_threshold. Walking is unaffected.
+    Ported from mujoco_playground T1's _cost_stand_still.
+
+    Args:
+        env: The environment instance
+        command_threshold: Command norm below which penalty applies
+
+    Returns:
+        Reward tensor [num_envs]
+    """
+    commands = env.command_manager.commands
+    cmd_norm = torch.norm(commands[:, :3], dim=1)
+    stand_mask = (cmd_norm < command_threshold).float()
+    qpos_error = torch.sum(torch.abs(env.simulator.dof_pos - env.default_dof_pos), dim=1)
+    return qpos_error * stand_mask
+
+
 # ================================================================================================
 # Stateful reward terms
 # ================================================================================================

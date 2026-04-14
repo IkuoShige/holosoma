@@ -291,6 +291,14 @@ k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
                 "command_norm_threshold": 0.1,
             },
         ),
+        # v45: penalize joint movement at zero command. Directly tells
+        # policy "don't move when standing." Only active when cmd_norm<0.1.
+        # Walking is completely unaffected.
+        "penalty_stand_still": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_stand_still",
+            weight=-2.0,
+            params={"command_threshold": 0.1},
+        ),
     },
 ))
 
