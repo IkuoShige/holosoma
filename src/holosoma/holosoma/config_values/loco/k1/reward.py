@@ -236,22 +236,21 @@ k1_22dof_loco_fast_sac = RewardManagerCfg(
 # alive kept (PPO has it; v5's drop was a FlashSAC workaround).
 #
 # PPO values → v36 values:
-# v38: restore v34 reward (canonical v5 + stride_progress + feet_air_time).
-# v34 is the only config that achieved stable walking.
-# Combined with v35's exploration tuning + short buffer.
+# v42: per-joint scaling from FastSAC enables STRONGER penalties.
+# Each joint now has authority proportional to its ROM (Hip_Pitch 11.2x
+# vs old uniform 4.0x). Penalties at PPO/2 instead of PPO/400.
+# Also keep stride_progress + feet_air_time (proven in v28-v34).
 _k1_base = make_flashsac_reward(
     k1_22dof_loco,
     upper_body_pose_indices=K1_UPPER_BODY_POSE_INDICES,
     weight_overrides={
-        "penalty_ang_vel_xy": -0.05,
-        # v41: revert to -1.0 (v39 value). v40 at -3.0 shrank hip pitch
-        # further (17.7°→15.9°) without fixing upper body lean.
-        "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.005,
-        "pose": -0.2,
-        "feet_phase": 2.5,
-        "penalty_feet_ori": -0.5,
-        "penalty_close_feet_xy": -1.0,
+        "penalty_ang_vel_xy": -0.5,       # PPO=-1.0 (half)
+        "penalty_orientation": -5.0,      # PPO=-10.0 (half)
+        "penalty_action_rate": -1.0,      # PPO=-2.0 (half)
+        "pose": -0.5,                     # PPO=-0.5 (full PPO value)
+        "feet_phase": 5.0,               # PPO=5.0 (full PPO value)
+        "penalty_feet_ori": -2.5,         # PPO=-5.0 (half)
+        "penalty_close_feet_xy": -5.0,    # PPO=-10.0 (half)
     },
 )
 

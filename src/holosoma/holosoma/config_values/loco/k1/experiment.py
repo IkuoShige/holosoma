@@ -84,13 +84,15 @@ k1_22dof_flash_sac = ExperimentConfig(
         asymmetric_observation=True,
         gamma=0.97,
         n_step=1,
-        target_action_scale_rad=1.0,
-        # Moderate exploration: between v34 stock and v35 aggressive
-        temp_initial_value=0.02,       # v34=0.01, v35=0.03
-        temp_target_sigma=0.20,        # v34=0.15, v35=0.25
-        actor_noise_zeta_mu=1.5,       # v34=2.0(stock), v35=1.2
-        actor_noise_zeta_max=20,       # v34=16(stock), v35=25
-        # Standard buffer (v38's 262k caused splits)
+        # v42: per-joint scaling (FastSAC port). -1.0 = sentinel for
+        # per-joint mode. Gives Hip_Pitch 11.2x (vs uniform 4.0x),
+        # matching FastSAC's authority that enables PPO-level penalties.
+        target_action_scale_rad=-1.0,
+        # v39 exploration (walked stably)
+        temp_initial_value=0.02,
+        temp_target_sigma=0.20,
+        actor_noise_zeta_mu=1.5,
+        actor_noise_zeta_max=20,
         buffer_max_length=10_000_000,
         buffer_min_length=100_000,
         updates_per_interaction_step=2.0,

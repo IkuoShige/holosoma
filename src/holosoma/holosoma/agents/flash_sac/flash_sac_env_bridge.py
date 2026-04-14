@@ -105,32 +105,54 @@ class FlashSACGymBridge(VectorEnv):
 
         # FlashSAC's actor outputs ``tanh(mean) ∈ [-1, 1]``. Holosoma's
         # ``JointPositionActionTerm`` then multiplies by
-        # ``robot.control.action_scale`` (0.25 for G1) to produce the joint
-        # position target offset from default. Without compensation, this
-        # gives the actor only ``±0.25 rad`` of per-joint authority — too
-        # narrow to walk (hip swing in a walking gait is 30-40°, ~0.5-0.7 rad).
+        # ``robot.control.action_scale`` (0.25 for G1/K1) to produce the
+        # joint position target offset from default.
         #
-        # FlashSAC's upstream training uses IsaacLab's stock
-        # ``Isaac-Velocity-Flat-G1-v0`` task which sets
-        # ``JointPositionActionCfg(scale=0.5)`` uniformly across all joints,
-        # giving ``±0.5 rad ≈ ±29°`` of authority. That is the effective
-        # joint-level action scale FlashSAC's algorithm hyperparameters
-        # (actor_noise_zeta, temp_target_sigma, etc.) are tuned against.
+        # Two scaling modes:
         #
-        # Match that by multiplying the actor's clamped output by
-        # ``target_action_scale_rad / env.robot_config.control.action_scale``
-        # — a UNIFORM factor, not per-joint. FastSAC's per-joint
-        # ``max_range / action_scale`` is a different design decision: it
-        # hands the actor full authority to reach joint limits, but that
-        # interacts badly with FlashSAC's fast entropy collapse (narrow
-        # deterministic policy landing in extreme joint configurations →
-        # robot falls → training diverges).
+        # 1. UNIFORM (target_action_scale_rad != None, use_per_joint_scaling=False):
+        #    All joints get the same multiplier. Original FlashSAC behavior.
         #
-        # Passing ``target_action_scale_rad=None`` disables the scaling
-        # entirely, matching the bare bridge behavior used for IsaacLab
-        # stock tasks which already scale internally.
-        self._action_scale_multiplier: float | None = None
-        if target_action_scale_rad is not None:
+        # 2. PER-JOINT (use_per_joint_scaling=True):
+        #    Each joint's multiplier = max_ROM_from_default / action_scale.
+        #    Ported from FastSAC's _compute_action_boundaries(). This gives
+        #    each joint full authority over its ROM. K1 Hip_Pitch gets 11.2x
+        #    (vs uniform 4.0x), enabling PPO-level hip swing amplitude.
+        #
+        #    Previously removed due to "thrashing" but that was with
+        #    different reward/exploration settings. v42 re-tests with
+        #    v39's proven reward + exploration.
+        self._action_scale_multiplier: torch.Tensor | float | None = None
+        use_per_joint = getattr(env.robot_config.control, '_use_per_joint_scaling', False)
+        # Check algo config for the flag (set via experiment config)
+        if hasattr(env, '_flash_sac_per_joint_scaling'):
+            use_per_joint = env._flash_sac_per_joint_scaling
+
+        if target_action_scale_rad is not None and target_action_scale_rad == -1.0:
+            # Special sentinel: -1.0 means per-joint scaling
+            use_per_joint = True
+
+        if use_per_joint:
+            # FastSAC-style per-joint scaling
+            robot_config = env.robot_config
+            env_action_scale = float(robot_config.control.action_scale)
+            dof_lower = torch.tensor(robot_config.dof_pos_lower_limit_list, device=self.device)
+            dof_upper = torch.tensor(robot_config.dof_pos_upper_limit_list, device=self.device)
+            default_pos = torch.zeros(len(robot_config.dof_names), device=self.device)
+            for i, name in enumerate(robot_config.dof_names):
+                if name in robot_config.init_state.default_joint_angles:
+                    default_pos[i] = robot_config.init_state.default_joint_angles[name]
+            range_lower = torch.abs(dof_lower - default_pos)
+            range_upper = torch.abs(dof_upper - default_pos)
+            max_range = torch.maximum(range_lower, range_upper)
+            self._action_scale_multiplier = (max_range / env_action_scale).float()
+            logger.info(
+                f"[FlashSAC bridge] Per-joint scaling enabled. "
+                f"Multipliers: min={self._action_scale_multiplier.min():.1f}, "
+                f"max={self._action_scale_multiplier.max():.1f}, "
+                f"hip_pitch={self._action_scale_multiplier[10]:.1f}"
+            )
+        elif target_action_scale_rad is not None:
             env_action_scale = float(env.robot_config.control.action_scale)
             if env_action_scale <= 0:
                 raise ValueError(
