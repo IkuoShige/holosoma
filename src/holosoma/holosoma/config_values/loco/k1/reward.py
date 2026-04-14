@@ -243,7 +243,12 @@ _k1_base = make_flashsac_reward(
     weight_overrides={
         "penalty_ang_vel_xy": -0.05,
         "penalty_orientation": -1.0,
-        "penalty_action_rate": -0.005,
+        # v44: -0.005 → -0.02. User: "足の動きがなめらかじゃない",
+        # "立っているだけで関節が動いたり動かなかったり". -0.005 is too
+        # weak to penalize small jittery actions. v31 tried -0.02 at
+        # different conditions (4096 envs, sigma=0.25) and it collapsed
+        # stride. v44 tests at 1024 envs + sigma=0.20.
+        "penalty_action_rate": -0.02,
         "pose": -0.2,
         "feet_phase": 2.5,
         "penalty_feet_ori": -0.5,
