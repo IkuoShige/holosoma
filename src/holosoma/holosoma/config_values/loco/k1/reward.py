@@ -247,7 +247,9 @@ _k1_base = make_flashsac_reward(
         # standing oscillation and v45 with stand_still=-2.0 killed walking.
         "penalty_action_rate": -0.005,
         "pose": -0.2,
-        "feet_phase": 2.5,
+        # v49: 2.5→3.5. Full command range needs stronger clock to
+        # enforce alternation (v48: 46% feet_phase but still skipping).
+        "feet_phase": 3.5,
         "penalty_feet_ori": -0.5,
         "penalty_close_feet_xy": -1.0,
     },
@@ -270,6 +272,14 @@ k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
     _k1_base,
     terms={
         **_k1_base.terms,
+        # v49: tighten feet_phase tracking_sigma 0.008→0.004.
+        # Forces precise clock-following. At 0.008, sloppy timing
+        # still gets ~80% reward. At 0.004, deviation is punished
+        # more sharply → periodic, rhythmic gait.
+        "feet_phase": _replace(
+            _k1_base.terms["feet_phase"],
+            params={"swing_height": 0.09, "tracking_sigma": 0.004},
+        ),
         "feet_air_time": RewardTermCfg(
             func="holosoma.managers.reward.terms.locomotion:FeetAirTime",
             weight=2.0,
