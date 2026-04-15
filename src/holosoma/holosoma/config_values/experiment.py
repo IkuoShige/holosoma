@@ -7,6 +7,7 @@ from holosoma.config_values.loco.k1.experiment import (
     k1_22dof_agile_fast_sac,
     k1_22dof_fast_sac,
     k1_22dof_soccer,
+    k1_22dof_soccer_run,
 )
 from holosoma.config_values.loco.t1.experiment import t1_29dof, t1_29dof_fast_sac
 from holosoma.config_values.wbt.g1.experiment import (
@@ -27,6 +28,7 @@ DEFAULTS = {
     "k1_22dof_agile": k1_22dof_agile,
     "k1_22dof_agile_fast_sac": k1_22dof_agile_fast_sac,
     "k1_22dof_soccer": k1_22dof_soccer,
+    "k1_22dof_soccer_run": k1_22dof_soccer_run,
     "g1_29dof_wbt": g1_29dof_wbt,
     "g1_29dof_wbt_w_object": g1_29dof_wbt_w_object,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac,

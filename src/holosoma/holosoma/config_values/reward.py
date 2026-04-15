@@ -7,6 +7,7 @@ from holosoma.config_values.loco.k1.reward import (
     k1_22dof_loco,
     k1_22dof_loco_fast_sac,
     k1_22dof_soccer_loco,
+    k1_22dof_soccer_run_loco,
 )
 from holosoma.config_values.loco.t1.reward import t1_29dof_loco, t1_29dof_loco_fast_sac
 from holosoma.config_values.wbt.g1.reward import (
@@ -26,6 +27,7 @@ DEFAULTS = {
     "k1_22dof_agile_loco": k1_22dof_agile_loco,
     "k1_22dof_agile_loco_fast_sac": k1_22dof_agile_loco_fast_sac,
     "k1_22dof_soccer_loco": k1_22dof_soccer_loco,
+    "k1_22dof_soccer_run_loco": k1_22dof_soccer_run_loco,
     "g1_29dof_loco": g1_29dof_loco,
     "g1_29dof_loco_fast_sac": g1_29dof_loco_fast_sac,
     "g1_29dof_wbt": g1_29dof_wbt_reward,

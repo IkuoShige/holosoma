@@ -54,11 +54,6 @@ CONDA_ENV_NAME=${CONDA_ENV_NAME:-hsmujoco}
 echo "conda environment name is set to: $CONDA_ENV_NAME"
 
 source ${SCRIPT_DIR}/source_common.sh
-
-# Detect OS and architecture
-OS_NAME="$(uname -s)"
-ARCH_NAME="$(uname -m)"
-
 ENV_ROOT=$CONDA_ROOT/envs/$CONDA_ENV_NAME
 SENTINEL_FILE=${WORKSPACE_DIR}/.env_setup_finished_$CONDA_ENV_NAME
 WARP_SENTINEL_FILE=${WORKSPACE_DIR}/.env_setup_finished_$CONDA_ENV_NAME_warp
@@ -69,6 +64,10 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   # Install miniconda (reuse existing logic)
   if [[ ! -d $CONDA_ROOT ]]; then
     mkdir -p $CONDA_ROOT
+
+    # Detect OS and architecture
+    OS_NAME="$(uname -s)"
+    ARCH_NAME="$(uname -m)"
 
     # Decide installer name based on OS/arch
     if [[ "$OS_NAME" == "Linux" ]]; then
@@ -133,10 +132,10 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   echo "Installing Holosoma packages"
   pip install -U pip
   if [[ "$OS_NAME" == "Linux" ]]; then
-    pip install -e "$ROOT_DIR/src/holosoma[unitree,booster]"
+    pip install -e $ROOT_DIR/src/holosoma[unitree, booster]
   elif [[ "$OS_NAME" == "Darwin" ]]; then
     echo "Warning: only unitree support for osx"
-    pip install -e "$ROOT_DIR/src/holosoma[unitree]"
+    pip install -e $ROOT_DIR/src/holosoma[unitree]
   else
     echo "Unsupported OS: $OS_NAME"
     exit 1
