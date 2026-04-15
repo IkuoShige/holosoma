@@ -101,6 +101,24 @@ python src/holosoma/holosoma/train_agent.py \
     exp:k1-22dof \
     simulator:mjwarp \
     logger:wandb
+
+# K1 with FlashSAC (IsaacSim)
+source scripts/source_isaacsim_setup.sh
+python src/holosoma/holosoma/train_agent.py \
+    exp:k1-22dof-flash-sac \
+    --training.headless=True
+```
+
+#### K1 FlashSAC Play / Eval
+
+```bash
+# Play (visualize trained policy via viser)
+source scripts/source_isaacsim_setup.sh
+python src/holosoma/holosoma/eval_agent.py \
+    --checkpoint logs/hv-k1-manager/<run_dir>/flashsac_step100000/flashsac_step100000.ckpt \
+    simulator:isaacsim \
+    --simulator.config.viser.enabled=True \
+    --training.export-onnx=False
 ```
 
 > **Note:**
