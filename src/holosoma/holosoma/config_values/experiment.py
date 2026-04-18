@@ -20,6 +20,7 @@ from holosoma.config_values.loco.k1.experiment import (
     k1_22dof_flash_sac_mjwarp,
     k1_22dof_flash_sac_stripped,
     k1_22dof_flash_sac_v5,
+    k1_22dof_flash_sac_v5_smooth,
     k1_22dof_flash_sac_v5_stride,
     k1_22dof_fpo,
 )
@@ -52,6 +53,7 @@ DEFAULTS = {
     "k1_22dof_flash_sac": k1_22dof_flash_sac,
     "k1_22dof_flash_sac_stripped": k1_22dof_flash_sac_stripped,
     "k1_22dof_flash_sac_v5": k1_22dof_flash_sac_v5,
+    "k1_22dof_flash_sac_v5_smooth": k1_22dof_flash_sac_v5_smooth,
     "k1_22dof_flash_sac_v5_stride": k1_22dof_flash_sac_v5_stride,
     "k1_22dof_flash_sac_mjwarp": k1_22dof_flash_sac_mjwarp,
     "k1_22dof_fpo": k1_22dof_fpo,

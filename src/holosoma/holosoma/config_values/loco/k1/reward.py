@@ -268,6 +268,51 @@ def _patch_knee_pose(base: RewardManagerCfg) -> RewardManagerCfg:
     )
 
 
+# v53: v5 recipe + 10x stronger penalty_action_rate (K1 v10 finding).
+#
+# v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) walked but with
+# a rapid tap-tap cadence and grazing feet. TB analysis revealed:
+#   rew_feet_phase = 3.12/4.0 = 78% (clock IS being followed, not zero)
+#   rew_tracking_lin_vel = 1.79/2.0 = 90% (forward tracking is strong)
+#   mean_action = +0.027 (non-zero but small amplitude)
+#
+# Revised diagnosis: the feet_phase kernel is exp(-err^2 / sigma), NOT
+# exp(-err^2 / sigma^2) — tracking_sigma=0.008 is actually quite loose
+# (effective sigma ~= 9cm tolerance). The narrow FlashSAC policy found
+# a degenerate local optimum where high-frequency small-amplitude
+# foot oscillation averages to near-target height, earning feet_phase
+# reward without actually doing sinusoidal swing. The tap-tap cadence
+# is the policy's high-frequency control signal.
+#
+# What permits the gaming is penalty_action_rate = -0.005 (G1 v5
+# default). With such a weak penalty, rapid action oscillations cost
+# almost nothing. K1 v10 (``20260410_125717``) empirically showed that
+# action_rate = -0.05 produces smooth symmetric locomotion at fwd
+# 0.29 m/s; v11 reverted to -0.005 and regained speed (0.354 m/s) but
+# re-introduced the small-amplitude oscillation that the user is now
+# observing on v51.
+#
+# v53 changes ONLY penalty_action_rate from -0.005 to -0.05. Everything
+# else is identical to v5 (no swing_height change, no tracking_sigma
+# change, no algorithm changes). Expected: smoother action trajectories
+# -> proper sinusoidal foot swing -> clock lock -> larger stride.
+k1_22dof_loco_flashsac_v5_smooth = _patch_knee_pose(_replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "feet_phase": _replace(
+            _k1_base.terms["feet_phase"],
+            weight=4.0,
+            params={"swing_height": 0.09, "tracking_sigma": 0.008},
+        ),
+        "penalty_action_rate": _replace(
+            _k1_base.terms["penalty_action_rate"],
+            weight=-0.05,
+        ),
+    },
+))
+
+
 # v52: v5 recipe + K1 short-leg stride fix.
 #
 # v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) walked, but:
@@ -442,5 +487,6 @@ __all__ = [
     "k1_22dof_loco_flashsac",
     "k1_22dof_loco_flashsac_stripped",
     "k1_22dof_loco_flashsac_v5",
+    "k1_22dof_loco_flashsac_v5_smooth",
     "k1_22dof_loco_flashsac_v5_stride",
 ]

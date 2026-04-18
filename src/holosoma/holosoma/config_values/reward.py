@@ -12,6 +12,7 @@ from holosoma.config_values.loco.k1.reward import (
     k1_22dof_loco_flashsac,
     k1_22dof_loco_flashsac_stripped,
     k1_22dof_loco_flashsac_v5,
+    k1_22dof_loco_flashsac_v5_smooth,
     k1_22dof_loco_flashsac_v5_stride,
 )
 from holosoma.config_values.loco.t1.reward import t1_29dof_loco, t1_29dof_loco_fast_sac
@@ -32,6 +33,7 @@ DEFAULTS = {
     "k1_22dof_loco_flashsac": k1_22dof_loco_flashsac,
     "k1_22dof_loco_flashsac_stripped": k1_22dof_loco_flashsac_stripped,
     "k1_22dof_loco_flashsac_v5": k1_22dof_loco_flashsac_v5,
+    "k1_22dof_loco_flashsac_v5_smooth": k1_22dof_loco_flashsac_v5_smooth,
     "k1_22dof_loco_flashsac_v5_stride": k1_22dof_loco_flashsac_v5_stride,
     "g1_29dof_loco": g1_29dof_loco,
     "g1_29dof_loco_fast_sac": g1_29dof_loco_fast_sac,

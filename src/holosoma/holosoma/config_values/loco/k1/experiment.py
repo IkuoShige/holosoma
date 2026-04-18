@@ -225,6 +225,53 @@ k1_22dof_flash_sac_v5 = ExperimentConfig(
     reward=reward.k1_22dof_loco_flashsac_v5,
 )
 
+# v53: v5 recipe + 10x stronger penalty_action_rate (K1 v10 finding).
+#
+# v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) TB analysis:
+#   rew_feet_phase = 3.12/4.0 = 78% (clock IS being followed)
+#   rew_tracking_lin_vel = 1.79/2.0 = 90% (forward tracking works)
+#   mean_action = +0.027 (non-zero but small)
+# Yet visually: tap-tap cadence, grazing feet, small stride.
+#
+# Diagnosis: feet_phase kernel exp(-err^2 / sigma) with sigma=0.008 has
+# effective tolerance ~= 9cm. Narrow policy gained reward by high-
+# frequency small-amplitude foot oscillation whose average matched the
+# Bezier target, without actual sinusoidal swing. penalty_action_rate
+# at -0.005 (G1 v5 default) is too weak to punish this. K1 v10
+# (``20260410_125717``) empirically proved -0.05 gives smooth gait.
+#
+# v53 changes ONE weight only: penalty_action_rate -0.005 -> -0.05.
+# No swing_height, tracking_sigma, algo, or command changes from v51.
+# num_learning_iterations=50_000 per FlashSAC paper preset (v51/v52
+# converged in the first half of 100k; 50k halves the feedback loop).
+k1_22dof_flash_sac_v5_smooth = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(
+        project="hv-k1-manager",
+        name="k1_22dof_flash_sac_v5_smooth_manager",
+        num_envs=1024,
+    ),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            target_action_scale_rad=1.0,
+            num_learning_iterations=50_000,
+        ),
+    ),
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum,
+    reward=reward.k1_22dof_loco_flashsac_v5_smooth,
+)
+
+
 # v52: v5 recipe + K1 short-leg stride fix.
 #
 # v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) walked but feet
@@ -309,6 +356,7 @@ __all__ = [
     "k1_22dof_flash_sac",
     "k1_22dof_flash_sac_stripped",
     "k1_22dof_flash_sac_v5",
+    "k1_22dof_flash_sac_v5_smooth",
     "k1_22dof_flash_sac_v5_stride",
     "k1_22dof_flash_sac_mjwarp",
     "k1_22dof_fpo",
