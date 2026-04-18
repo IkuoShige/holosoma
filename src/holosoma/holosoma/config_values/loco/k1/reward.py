@@ -268,6 +268,41 @@ def _patch_knee_pose(base: RewardManagerCfg) -> RewardManagerCfg:
     )
 
 
+# v52: v5 recipe + K1 short-leg stride fix.
+#
+# v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) walked, but:
+#   - feet grazed the ground (didn't lift)
+#   - cadence was rapid "tan-tan" rather than sinusoidal
+#   - standstill showed hip-forward arched posture
+#
+# Root cause for the feet + cadence issues: the G1 v5 feet_phase kernel
+# (``swing_height=0.09m``, ``tracking_sigma=0.008m``) is geometrically
+# unreachable for K1's shorter legs with the default-pose kinematics,
+# AND the kernel is so sharp that any imprecision gives near-zero reward
+# (exp(-(0.02/0.008)^2) ~= 0.002). The narrow FlashSAC policy accepts
+# feet_phase = 0 and optimizes the remaining 8 terms, which removes the
+# clock-synchronization gradient — cadence defaults to the policy's
+# natural oscillation frequency and stride stays tiny.
+#
+# This preset relaxes the feet_phase kernel specifically:
+#   swing_height    0.09 → 0.065  (K1 v11–v15 short-leg finding)
+#   tracking_sigma  0.008 → 0.015 (partial reward restores gradient)
+# Everything else is identical to v5. If stride increases, cadence
+# should lock to the clock and standstill posture may also improve
+# indirectly; stand_still + gait_period 1.2s remain in reserve as v53.
+k1_22dof_loco_flashsac_v5_stride = _patch_knee_pose(_replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "feet_phase": _replace(
+            _k1_base.terms["feet_phase"],
+            weight=4.0,
+            params={"swing_height": 0.065, "tracking_sigma": 0.015},
+        ),
+    },
+))
+
+
 # v51 / Plan A+: G1 v5 recipe (9 terms) applied literally to K1.
 #
 # Plan A (``k1_22dof_flash_sac_stripped``, run 20260418_124413) converged
@@ -407,4 +442,5 @@ __all__ = [
     "k1_22dof_loco_flashsac",
     "k1_22dof_loco_flashsac_stripped",
     "k1_22dof_loco_flashsac_v5",
+    "k1_22dof_loco_flashsac_v5_stride",
 ]

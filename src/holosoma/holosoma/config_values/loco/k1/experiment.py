@@ -225,6 +225,52 @@ k1_22dof_flash_sac_v5 = ExperimentConfig(
     reward=reward.k1_22dof_loco_flashsac_v5,
 )
 
+# v52: v5 recipe + K1 short-leg stride fix.
+#
+# v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) walked but feet
+# grazed the ground, cadence was rapid staccato, and standstill posture
+# was arched hip-forward. Diagnosis: the feet_phase kernel
+# (``swing_height=0.09m``, ``tracking_sigma=0.008m``) is unreachable and
+# too sharp for K1 kinematics, so the narrow policy abandons feet_phase
+# reward. Without that gradient, stride stays tiny and clock lock is
+# lost — the observed cadence is the policy's natural oscillation, not
+# the ``gait_period=1.0s`` clock.
+#
+# v52 relaxes feet_phase parameters ONLY, nothing else changes from v51:
+#   swing_height    0.09 → 0.065  (K1 v11–v15 short-leg finding)
+#   tracking_sigma  0.008 → 0.015 (partial reward restores gradient)
+#
+# If stride increases and clock lock returns, cadence should also
+# normalize without touching gait_period. penalty_stand_still and
+# gait_period=1.2s stay in reserve for v53 if standstill posture and
+# timing still need direct intervention.
+k1_22dof_flash_sac_v5_stride = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(
+        project="hv-k1-manager",
+        name="k1_22dof_flash_sac_v5_stride_manager",
+        num_envs=1024,
+    ),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            target_action_scale_rad=1.0,
+            num_learning_iterations=100_000,
+        ),
+    ),
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum,
+    reward=reward.k1_22dof_loco_flashsac_v5_stride,
+)
+
 k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
@@ -263,6 +309,7 @@ __all__ = [
     "k1_22dof_flash_sac",
     "k1_22dof_flash_sac_stripped",
     "k1_22dof_flash_sac_v5",
+    "k1_22dof_flash_sac_v5_stride",
     "k1_22dof_flash_sac_mjwarp",
     "k1_22dof_fpo",
 ]
