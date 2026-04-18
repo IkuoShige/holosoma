@@ -132,6 +132,99 @@ k1_22dof_flash_sac = ExperimentConfig(
     reward=reward.k1_22dof_loco_flashsac,
 )
 
+# v50 / Plan A: G1 attempt #6 recipe ported to K1.
+#
+# Every prior K1 FlashSAC experiment (v1–v49) keeps the full PPO reward
+# structure with K1-specific additions (feet_air_time, stride_progress,
+# penalty_stand_still) and iterates on the weights. The one G1 recipe
+# that produced clean walking — attempt #6 (``20260408_142832``) — is a
+# 5-term IsaacLab-stock mirror with NO phase clock in the observation and
+# NO shaping terms at all. That recipe has never been run on K1 under
+# the post-v13 ``target_action_scale_rad=1.0`` action-scale regime.
+#
+# This preset is the minimal port of that recipe:
+#   - reward = ``k1_22dof_loco_flashsac_stripped`` (5 terms, no feet_phase,
+#     no pose, no alive, no close_feet, no feet_ori)
+#   - observation = ``k1_22dof_loco_single_flashsac`` (no sin/cos phase)
+#   - algo = stock ``algo.flash_sac`` (sigma=0.15, asymmetric_observation
+#     =False, n_step=3, updates_per_interaction_step=2.0) — upstream paper
+#     defaults, unchanged
+#   - target_action_scale_rad=1.0 — K1-specific; v13 proved this recovers
+#     hip swing amplitude from 0.14→0.30 rad (FlashSAC is tanh-bounded,
+#     unlike PPO). This is the only K1-specific algo override.
+#   - num_envs=1024 + num_learning_iterations=100_000 — matching paper
+#     preset (num_envs * iter ≈ 100M interaction steps).
+#
+# If this fails (policy collapses to stand-still, as Option A on G1 did at
+# ``20260409_053822``), the stripped preset is definitionally not enough
+# for K1 and the next step is plan B (PPO warm-start) or accepting the
+# v49 12-term recipe as the best achievable.
+k1_22dof_flash_sac_stripped = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(
+        project="hv-k1-manager",
+        name="k1_22dof_flash_sac_stripped_manager",
+        num_envs=1024,
+    ),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            target_action_scale_rad=1.0,
+            num_learning_iterations=100_000,
+        ),
+    ),
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_flashsac,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum,
+    reward=reward.k1_22dof_loco_flashsac_stripped,
+)
+
+# v51 / Plan A+: G1 v5 recipe (9 terms) applied literally to K1.
+#
+# Plan A (``k1_22dof_flash_sac_stripped``, run 20260418_124413) was smooth
+# but the 5-term reward lets a narrow FlashSAC policy settle into a
+# static-splits local optimum (one foot forward, one back, body low). The
+# G1 v5 recipe adds feet_phase (forces alternating foot lift),
+# pose (weak leg constraint + strong upper body), and
+# penalty_close_feet_xy — the minimal shaping that prevents the splits
+# attractor — without the K1-specific feet_air_time / stride_progress /
+# stand_still terms that v28–v49 never converged with. Observation goes
+# back to ``k1_22dof_loco_single_wolinvel`` so the policy can consume
+# sin_phase/cos_phase required for feet_phase tracking.
+k1_22dof_flash_sac_v5 = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(
+        project="hv-k1-manager",
+        name="k1_22dof_flash_sac_v5_manager",
+        num_envs=1024,
+    ),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            target_action_scale_rad=1.0,
+            num_learning_iterations=100_000,
+        ),
+    ),
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum,
+    reward=reward.k1_22dof_loco_flashsac_v5,
+)
+
 k1_22dof_flash_sac_mjwarp = ExperimentConfig(
     env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
     training=TrainingConfig(project="hv-k1-manager", name="k1_22dof_flash_sac_mjwarp_manager"),
@@ -164,4 +257,12 @@ k1_22dof_fpo = ExperimentConfig(
     reward=reward.k1_22dof_loco,
 )
 
-__all__ = ["k1_22dof", "k1_22dof_fast_sac", "k1_22dof_flash_sac", "k1_22dof_flash_sac_mjwarp", "k1_22dof_fpo"]
+__all__ = [
+    "k1_22dof",
+    "k1_22dof_fast_sac",
+    "k1_22dof_flash_sac",
+    "k1_22dof_flash_sac_stripped",
+    "k1_22dof_flash_sac_v5",
+    "k1_22dof_flash_sac_mjwarp",
+    "k1_22dof_fpo",
+]

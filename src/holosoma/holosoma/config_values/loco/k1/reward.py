@@ -268,6 +268,41 @@ def _patch_knee_pose(base: RewardManagerCfg) -> RewardManagerCfg:
     )
 
 
+# v51 / Plan A+: G1 v5 recipe (9 terms) applied literally to K1.
+#
+# Plan A (``k1_22dof_flash_sac_stripped``, run 20260418_124413) converged
+# smoothly but to a static-splits local optimum (right foot forward, left
+# foot backward, body low). The 5-term reward has no term forcing foot
+# lift or alternation, and no term penalizing legs spread apart, so a
+# narrow policy finds the stretched static pose as a tracking-reward
+# maximizer.
+#
+# The G1 v5 recipe fixes this exact failure mode:
+#   feet_phase (4.0)             — forces alternating foot lift → breaks static
+#   pose (-0.2, ub=150)          — weak leg constraint, strong upper-body keep
+#   penalty_close_feet_xy (-1.0) — prevents feet overlap (and indirectly splits)
+#   penalty_feet_ori (-0.5)      — gentle foot orientation guidance
+#
+# No feet_air_time / stride_progress / stand_still / alive — those are
+# the K1-specific additions that v28–v49 layered on, and none produced
+# PPO-quality gait. This preset is the "stop adding shaping, just use
+# what worked on G1" control experiment.
+#
+# Note: _k1_base uses feet_phase=3.5 (v49 override); restore 4.0 to match
+# G1 v5 exactly.
+k1_22dof_loco_flashsac_v5 = _patch_knee_pose(_replace(
+    _k1_base,
+    terms={
+        **_k1_base.terms,
+        "feet_phase": _replace(
+            _k1_base.terms["feet_phase"],
+            weight=4.0,
+            params={"swing_height": 0.09, "tracking_sigma": 0.008},
+        ),
+    },
+))
+
+
 k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
     _k1_base,
     terms={
@@ -307,4 +342,69 @@ k1_22dof_loco_flashsac = _patch_knee_pose(_replace(
     },
 ))
 
-__all__ = ["k1_22dof_loco", "k1_22dof_loco_fast_sac", "k1_22dof_loco_flashsac"]
+# v50 (Plan A / stripped): IsaacLab-stock-style minimal reward.
+#
+# Motivation: v1-v49 (50 iterations) all use the full PPO reward structure
+# (tracking + feet_phase + pose + orientation + ang_vel_xy + action_rate +
+# close_feet_xy + feet_ori, with K1-specific additions feet_air_time /
+# stride_progress / stand_still). Every iteration re-weights these terms;
+# none remove them. The G1 port's only clean-walking recipe (attempt #6,
+# ``20260408_142832``: 0.28 m/s, stable) is the 5-term stripped IsaacLab-
+# stock mirror, which was NEVER tried on K1 under the post-v13 correct
+# action-scale regime (``target_action_scale_rad=1.0``).
+#
+# This preset is that missing experiment: drop every shaping term that
+# competes with forward walking and leave only the IsaacLab-stock core.
+#
+# Removed vs k1_22dof_loco_flashsac (v49):
+#   feet_phase, feet_air_time, stride_progress, penalty_stand_still,
+#   pose, penalty_feet_ori, penalty_close_feet_xy
+#
+# Kept (IsaacLab stock + FlashSAC-safe penalty weights):
+#   tracking_lin_vel    +2.0  sigma=0.25
+#   tracking_ang_vel    +1.5  sigma=0.25
+#   penalty_ang_vel_xy  -0.05   (PPO: -1.0; IsaacLab stock: -0.05)
+#   penalty_orientation -1.0    (PPO: -10.0; 10× weaker)
+#   penalty_action_rate -0.005  (PPO: -2.0; 400× weaker — required)
+#
+# Observation must be ``k1_22dof_loco_single_flashsac`` (no sin/cos phase
+# clock): without feet_phase in the reward, the clock observation is dead
+# weight and only contributes a feature the policy cannot exploit usefully.
+k1_22dof_loco_flashsac_stripped = RewardManagerCfg(
+    only_positive_rewards=False,
+    terms={
+        "tracking_lin_vel": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:tracking_lin_vel",
+            weight=2.0,
+            params={"tracking_sigma": 0.25},
+        ),
+        "tracking_ang_vel": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:tracking_ang_vel",
+            weight=1.5,
+            params={"tracking_sigma": 0.25},
+        ),
+        "penalty_ang_vel_xy": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_ang_vel_xy",
+            weight=-0.05,
+            params={},
+        ),
+        "penalty_orientation": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_orientation",
+            weight=-1.0,
+            params={},
+        ),
+        "penalty_action_rate": RewardTermCfg(
+            func="holosoma.managers.reward.terms.locomotion:penalty_action_rate",
+            weight=-0.005,
+            params={},
+        ),
+    },
+)
+
+__all__ = [
+    "k1_22dof_loco",
+    "k1_22dof_loco_fast_sac",
+    "k1_22dof_loco_flashsac",
+    "k1_22dof_loco_flashsac_stripped",
+    "k1_22dof_loco_flashsac_v5",
+]
