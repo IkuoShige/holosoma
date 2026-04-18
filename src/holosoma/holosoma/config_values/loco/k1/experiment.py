@@ -225,6 +225,64 @@ k1_22dof_flash_sac_v5 = ExperimentConfig(
     reward=reward.k1_22dof_loco_flashsac_v5,
 )
 
+# v54: v5 recipe + widened exploration (K1 sigma finding).
+#
+# v51/v52/v53 (reward tweaks) all produced visually-identical tap-tap
+# cadence, grazing feet, small stride. v51 TB showed policy fully
+# collapsed at iter ~50k (entropy -10.66 ≈ K1 target -10.51,
+# temperature 0.0013 ~= alpha zero). In that state the policy is
+# effectively deterministic and cannot explore new motion patterns
+# regardless of reward changes.
+#
+# v54 changes ONE algorithm knob: temp_target_sigma 0.15 -> 0.25.
+# This raises the entropy target from -10.5 to ~-4 (roughly), so
+# temperature / alpha stays non-zero and the policy remains
+# stochastic enough to discover larger-amplitude motion patterns.
+#
+# Reward stays at v5 unchanged (action_rate=-0.005 restored from
+# v53's -0.05 since v53's effect was invisible — preserve single-
+# variable diagnosis). target_action_scale_rad=1.0 preserved (K1
+# v13 finding).
+#
+# Prior evidence for sigma=0.25 on K1: flashsac_reward_translation.md
+# v5 (run 20260410_080903) tried sigma 0.15->0.25 with v2 reward
+# (short buffer, other drift) and "still shuffle but entropy OK,
+# temp=0.0011". That run had confounds (reward + buffer + other
+# changes). v54 isolates sigma on the verified v51 baseline.
+#
+# If v54 produces larger stride / proper sine rhythm: exploration
+# width was the constraint, further tuning within this basin.
+# If v54 still tap-tap: narrow-by-design is structural to FlashSAC
+# on K1, escalate to (A1) PPO weight-copy or (C) accept PPO-only.
+k1_22dof_flash_sac_v5_wider = ExperimentConfig(
+    env_class="holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager",
+    training=TrainingConfig(
+        project="hv-k1-manager",
+        name="k1_22dof_flash_sac_v5_wider_manager",
+        num_envs=1024,
+    ),
+    algo=replace(
+        algo.flash_sac,
+        config=replace(
+            algo.flash_sac.config,
+            target_action_scale_rad=1.0,
+            temp_target_sigma=0.25,
+            num_learning_iterations=50_000,
+        ),
+    ),
+    simulator=simulator.isaacsim,
+    robot=robot.k1_22dof,
+    terrain=terrain.terrain_locomotion_mix,
+    observation=observation.k1_22dof_loco_single_wolinvel,
+    action=action.k1_22dof_joint_pos,
+    termination=termination.k1_22dof_termination,
+    randomization=randomization.k1_22dof_randomization,
+    command=command.k1_22dof_command,
+    curriculum=curriculum.k1_22dof_curriculum,
+    reward=reward.k1_22dof_loco_flashsac_v5,
+)
+
+
 # v53: v5 recipe + 10x stronger penalty_action_rate (K1 v10 finding).
 #
 # v51 (``k1_22dof_flash_sac_v5``, run 20260418_153529) TB analysis:
@@ -358,6 +416,7 @@ __all__ = [
     "k1_22dof_flash_sac_v5",
     "k1_22dof_flash_sac_v5_smooth",
     "k1_22dof_flash_sac_v5_stride",
+    "k1_22dof_flash_sac_v5_wider",
     "k1_22dof_flash_sac_mjwarp",
     "k1_22dof_fpo",
 ]
